@@ -27,7 +27,7 @@ class ConfigNamespace(object):
             setattr(self, name, value)
     def get(self, key, default=None):
         return getattr(self, key, default)
-    def __iter__(self):
+    def items(self):
         return self._mapping.items()
 
 # load config into a config namespace, and config["parameters"] into a parameters namespace
