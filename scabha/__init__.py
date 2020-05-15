@@ -15,8 +15,8 @@ MSDIR = os.environ["MSDIR"]
 
 class ConfigNamespace(object):
     """A config namespace maps a dict with attribute-like keys to a namespace with attributes."""
-    def __init__(self, config):
-        for name, value in config.get("parameters", {}).items():
+    def __init__(self, mapping):
+        for name, value in mapping.items():
             name = name.replace("-", "_")
             setattr(self, name, value)
     def get(self, key, default=None):
@@ -25,7 +25,7 @@ class ConfigNamespace(object):
 # load config into a config namespace, and config["parameters"] into a parameters namespace
 with open(CONFIG, "r") as _std:
     config = ConfigNamespace(yaml.safe_load(_std))
-    parameters = ConfigNamespace(getattr(config, 'parameters', {}))
+    parameters = ConfigNamespace({p["name"]: p["value"] for p in getattr(config, 'parameters', [])})
 
 def init_logger(name="STIMELA",
            fmt="{asctime}: {message}",
