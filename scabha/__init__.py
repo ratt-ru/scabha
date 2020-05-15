@@ -22,8 +22,8 @@ class ConfigNamespace(object):
     def __init__(self, mapping):
         self._mapping = {}
         for name, value in mapping.items():
-            name = name.replace("-", "_")
             self._mapping[name] = value
+            name = name.replace("-", "_")
             setattr(self, name, value)
     def get(self, key, default=None):
         return getattr(self, key, default)
