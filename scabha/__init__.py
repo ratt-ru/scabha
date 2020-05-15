@@ -14,13 +14,21 @@ MSDIR = os.environ["MSDIR"]
 
 
 class ConfigNamespace(object):
-    """A config namespace maps a dict with attribute-like keys to a namespace with attributes."""
+    """A config namespace maps a dict with attribute-like keys to a namespace with attributes.
+
+    It also has a get(attr, default=None) method, and it can be iterated over,
+    yielding name, value pairs.
+    """
     def __init__(self, mapping):
+        self._mapping = {}
         for name, value in mapping.items():
             name = name.replace("-", "_")
+            self._mapping[name] = value
             setattr(self, name, value)
     def get(self, key, default=None):
         return getattr(self, key, default)
+    def __iter__(self):
+        return self._mapping.items()
 
 # load config into a config namespace, and config["parameters"] into a parameters namespace
 with open(CONFIG, "r") as _std:
