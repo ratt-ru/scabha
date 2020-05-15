@@ -29,7 +29,7 @@ with open(CONFIG, "r") as _std:
 
 def init_logger(name="STIMELA",
            fmt="{asctime}: {message}",
-           col_fmt="{asctime}: {message}%s"%(ConsoleColors.BEGIN, ConsoleColors.END),
+           col_fmt="{asctime}: %s{message}%s"%(ConsoleColors.BEGIN, ConsoleColors.END),
            datefmt="%Y-%m-%d %H:%M:%S", loglevel="INFO"):
     """Returns the global Stimela logger (initializing if not already done so, with the given values)"""
     global log
