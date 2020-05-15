@@ -4,6 +4,7 @@ import logging
 import sys
 import yaml
 import subprocess
+from collections import OrderedDict
 
 from .logging_utils import ConsoleColors, SelectiveFormatter, ColorizingFormatter, MultiplexingHandler
 
@@ -33,7 +34,8 @@ class ConfigNamespace(object):
 # load config into a config namespace, and config["parameters"] into a parameters namespace
 with open(CONFIG, "r") as _std:
     config = ConfigNamespace(yaml.safe_load(_std))
-    parameters = ConfigNamespace({p["name"]: p["value"] for p in getattr(config, 'parameters', [])})
+    parameters_dict = OrderedDict([(p["name"], p["value"]) for p in getattr(config, 'parameters', [])])
+    parameters = ConfigNamespace(parameters_dict)
 
 def init_logger(name="STIMELA",
            fmt="{asctime}: {message}",
