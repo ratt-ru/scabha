@@ -4,6 +4,7 @@ import logging
 import sys
 import yaml
 import subprocess
+from collections import OrderedDict
 
 from .logging_utils import ConsoleColors, SelectiveFormatter, ColorizingFormatter, MultiplexingHandler
 
@@ -14,22 +15,31 @@ MSDIR = os.environ["MSDIR"]
 
 
 class ConfigNamespace(object):
-    """A config namespace maps a dict with attribute-like keys to a namespace with attributes."""
-    def __init__(self, config):
-        for name, value in config.get("parameters", {}).items():
+    """A config namespace maps a dict with attribute-like keys to a namespace with attributes.
+
+    It also has a get(attr, default=None) method, and it can be iterated over,
+    yielding name, value pairs.
+    """
+    def __init__(self, mapping):
+        self._mapping = {}
+        for name, value in mapping.items():
+            self._mapping[name] = value
             name = name.replace("-", "_")
             setattr(self, name, value)
     def get(self, key, default=None):
-        return getattr(self, key, default)
+        return self._mapping.get(key, default)
+    def items(self):
+        return self._mapping.items()
 
 # load config into a config namespace, and config["parameters"] into a parameters namespace
 with open(CONFIG, "r") as _std:
     config = ConfigNamespace(yaml.safe_load(_std))
-    parameters = ConfigNamespace(getattr(config, 'parameters', {}))
+    parameters_dict = OrderedDict([(p["name"], p["value"]) for p in getattr(config, 'parameters', [])])
+    parameters = ConfigNamespace(parameters_dict)
 
 def init_logger(name="STIMELA",
            fmt="{asctime}: {message}",
-           col_fmt="{asctime}: {message}%s"%(ConsoleColors.BEGIN, ConsoleColors.END),
+           col_fmt="{asctime}: %s{message}%s"%(ConsoleColors.BEGIN, ConsoleColors.END),
            datefmt="%Y-%m-%d %H:%M:%S", loglevel="INFO"):
     """Returns the global Stimela logger (initializing if not already done so, with the given values)"""
     global log
