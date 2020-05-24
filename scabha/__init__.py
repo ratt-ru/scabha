@@ -84,4 +84,4 @@ def report_memory():
 log.info("Initial memory state:")
 report_memory()
 
-from .proc_utils import prun, prun_multi, clear_junk
+from .proc_utils import prun, prun_multi, clear_junk, parse_parameters
