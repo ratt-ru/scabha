@@ -5,7 +5,7 @@ import glob
 import os.path
 import shutil
 
-from . import log, OUTPUT, MSDIR, config, parameters_dict
+from . import log, OUTPUT, MSDIR, config, parameters_dict, parameters_prefix
 
 def convert_command(command):
     """Converts list or str command into a string and a list"""
@@ -141,7 +141,8 @@ def parse_parameters(pardict=None, positional=None, mandatory=None, repeat=True,
         # ignore None or False values, they are considered unset
         if value in [None, False]:
             continue
-        option = f'{config.prefix}{key}'
+        prefix = parameters_prefix[key]
+        option = f'{prefix}{key}'
         # True values map to a single option
         if value is True:
             args.append(option)

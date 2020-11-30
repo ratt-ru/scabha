@@ -35,6 +35,7 @@ class ConfigNamespace(object):
 with open(CONFIG, "r") as _std:
     config = ConfigNamespace(yaml.safe_load(_std))
     parameters_dict = OrderedDict([(p["name"], p["value"]) for p in getattr(config, 'parameters', [])])
+    parameters_prefix = OrderedDict([(p["name"], p.get("prefix", config.prefix)) for p in getattr(config, 'parameters', [])])
     parameters = ConfigNamespace(parameters_dict)
 
 def init_logger(name="STIMELA",
