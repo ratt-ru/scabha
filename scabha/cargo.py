@@ -1,11 +1,11 @@
-import os.path, re
+import os.path, re, stat, itertools, logging
 from typing import Any, List, Dict, Optional, Union
 from enum import Enum
 from dataclasses import dataclass, field
 from omegaconf.omegaconf import MISSING, OmegaConf
 from collections import OrderedDict
 
-from .exceptions import CabValidationError, DefinitionError
+from .exceptions import CabValidationError, DefinitionError, SchemaError
 from . import validate
 from .validate import validate_parameters
 
@@ -26,11 +26,22 @@ Conditional = Optional[str]
 class ParameterPolicies(object):
     # if true, value is passed as a positional argument, not an option
     positional: Optional[bool] = None
-    # for list-type values, use this as a separator to paste them together. Use "list"
-    # to repeat list-type values as multiple arguments
+    # if true, value is head-positional, i.e. passed *before* any options
+    positional_head: Optional[bool] = None
+    # for list-type values, use this as a separator to paste them together into one argument. Otherwise:
+    #  * use "list" to pass list-type values as multiple arguments (--option X Y)
+    #  * use "repeat" to rpeat the option (--option X --option Y)
     repeat: Optional[str] = None
     # prefix for non-positional arguments
-    prefix: Optional[str] = "--"
+    prefix: Optional[str] = None
+
+    # skip this parameter
+    skip: bool = False
+    # if True, implicit parameters will be skipped automatically
+    skip_implicits: bool = True
+
+    # if set, a string-type value will be split into a list of arguments using this separator
+    split: Optional[str] = None
 
     # Value formatting policies.
     # If set, specifies {}-type format strings used to convert the value(s) to string(s).
@@ -45,6 +56,7 @@ class ParameterPolicies(object):
     # **dict contains all parameters passed to a cab, so these can be used in the formatting
     format: Optional[str] = None
     format_list: Optional[List[str]] = None
+
 
 
 @dataclass 
@@ -113,7 +125,7 @@ class Cargo(object):
         return {name: schema for name, schema in self.inputs_outputs.items() if schema.required and name not in self.params}
 
     def finalize(self, config, full_name=None, log=None):
-        pass
+        self.log = log
 
     def validate(self, config, params: Optional[Dict[str, Any]] = None, subst: Optional[Dict[str, Any]] = None):
         pass
@@ -140,15 +152,31 @@ class Cab(Cargo):
     Raises:
         CabValidationError: [description]
     """
-    image: Optional[str] = None                   # container image to run 
+    # if set, the cab is run in a container, and this is the image name
+    # if not set, commands are run nativelt
+    image: Optional[str] = None                   
+
+    # command to run, inside the container or natively
     command: str = MISSING                        # command to run (inside or outside the container)
-    # not sure what these are
-    msdir: Optional[bool] = False
-    prefix: Optional[str] = "-"
+
+    # if set, activates this virtual environment first before running the command (not much sense doing this inside the container)
+    virtual_env: Optional[str] = None
+
+    # # not sure why this is here, let's retire (recipe defines "dirs")
+    # msdir: Optional[bool] = False
     # cab management and cleanup definitions
     management: CabManagement = CabManagement()
 
+    # default parameter conversion policies
     policies: ParameterPolicies = ParameterPolicies()
+
+    wrangler_actions =  {attr: value for attr, value in logging.__dict__.items() if attr.upper() == attr and type(value) is int}
+
+    # then add litetal constants for other wrangler actions
+    ACTION_SUPPRESS = wrangler_actions["SUPPRESS"] = "SUPPRESS"
+    ACTION_DECLARE_SUCCESS = wrangler_actions["DECLARE_SUCCESS"] = "DECLARE_SUPPRESS"
+    ACTION_DECLARE_FAILURE = wrangler_actions["DECLARE_FAILURE"] = "DECLARE_FAILURE"
+
 
     def __post_init__ (self):
         if self.name is None:
@@ -157,9 +185,31 @@ class Cab(Cargo):
         for param in self.inputs.keys():
             if param in self.outputs:
                 raise CabValidationError(f"cab {self.name}: parameter {param} is both an input and an output, this is not permitted")
+        # setup wranglers
+        self._wranglers = []
+        for match, actions in self.management.wranglers.items():
+            replace = None
+            if type(actions) is str:
+                actions = [actions]
+            if type(actions) is not list:
+                raise CabValidationError(f"wrangler entry {match}: expected action or list of actions")
+            for action in actions:
+                if action.startswith("replace:"):
+                    replace = action.split(":", 1)[1]
+                elif action not in self.wrangler_actions:
+                    raise CabValidationError(f"wrangler entry {match}: unknown action '{action}'")
+            actions = [self.wrangler_actions[act] for act in actions if act in self.wrangler_actions]
+            try:
+                rexp = re.compile(match)
+            except Exception as exc:
+                raise CabValidationError(f"wrangler entry {match} is not a valid regular expression")
+            self._wranglers.append((re.compile(match), replace, actions))
+        self._runtime_status = None
+
 
     def validate(self, config, params: Optional[Dict[str, Any]] = None, subst: Optional[Dict[str, Any]] = None):
         self.params = validate_parameters(params, self.inputs_outputs, defaults=self.defaults, subst=subst)
+
 
     @property
     def summary(self):
@@ -174,12 +224,183 @@ class Cab(Cargo):
         return lines
 
 
-    def run(self):
-        if self.image:
-            raise RuntimeError("container runner not yet implemented")
-        else:
-            import scabha
-            from scabha import proc_utils
-            proc_utils.build_cab_arguments()
-        
+    def build_command_line(self, subst=None):
+        subst = subst or OmegaConf.create()
+        subst.self = self.make_substitition_namespace()
 
+        if self.virtual_env:
+            venv = os.path.expanduser(self.virtual_env).format(**subst)
+            if not os.path.isfile(f"{venv}/bin/activate"):
+                raise CabValidationError(f"virtual environment {venv} doesn't exist", log=self.log)
+            self.log.debug(f"virtual envirobment is {venv}")
+        else:
+            venv = None
+
+        command = os.path.expanduser(self.command).format(**subst)
+        # collect command
+        if "/" not in command:
+            from scabha.proc_utils import which
+            command0 = command
+            command = which(command, extra_paths=venv and [f"{venv}/bin"])
+            if command is None:
+                raise CabValidationError(f"{command0}: not found", log=self.log)
+        else:
+            if not os.path.isfile(command) and os.stat(command).st_mode & stat.S_IXUSR:
+                raise CabValidationError(f"{command} doesn't exist or is not executable", log=self.log)
+
+        self.log.debug(f"command is {command}")
+
+        return ([command] + self.build_argument_list()), venv
+
+
+    def build_argument_list(self):
+        """
+        Converts command, and current dict of parameters, into a list of command-line arguments.
+
+        pardict:     dict of parameters. If None, pulled from default config.
+        positional:  list of positional parameters, if any
+        mandatory:   list of mandatory parameters.
+        repeat:      How to treat iterable parameter values. If a string (e.g. ","), list values will be passed as one
+                    command-line argument, joined by that separator. If True, list values will be passed as
+                    multiple repeated command-line options. If None, list values are not allowed.
+        repeat_dict: Like repeat, but defines this behaviour per parameter. If supplied, then "repeat" is used
+                    as the default for parameters not in repeat_dict.
+
+        Returns list of arguments.
+        """
+
+        # collect parameters
+
+        value_dict = dict(**self.params)
+
+        def get_policy(schema, policy):
+            if schema.policies[policy] is not None:
+                return schema.policies[policy]
+            else:
+                return self.policies[policy]
+
+        def stringify_argument(name, value, schema, option=None):
+            if value is None:
+                return None
+            if schema.dtype == "bool" and not value:
+                return None
+
+            is_list = hasattr(value, '__iter__') and type(value) is not str
+            format_policy = get_policy(schema, 'format')
+            format_list_policy = get_policy(schema, 'format_list')
+            split_policy = get_policy(schema, 'split')
+            
+            if type(value) is str and split_policy:
+                value = value.split(split_policy or None)
+                is_list = True
+
+            if is_list:
+                # apply formatting policies
+                if format_list_policy:
+                    if len(format_list_policy) != len(value):
+                        raise SchemaError("length of format_list_policy does not match length of '{name}'")
+                    value = [fmt.format(*value, **value_dict) for fmt in format_list_policy]
+                elif format_policy:
+                    value = [format_policy.format(x, **value_dict) for x in value]
+                else:
+                    value = [str(x) for x in value]
+            else:
+                if format_list_policy:
+                    value = [fmt.format(value, **value_dict) for fmt in format_list_policy]
+                    is_list = True
+                elif format_policy:
+                    value = format_policy.format(value, **value_dict)
+                else:
+                    value = str(value)
+
+            if is_list:
+                # check repeat policy and form up representation
+                repeat_policy = get_policy(schema, 'repeat')
+                if repeat_policy == "list":
+                    return [option] + list(value) if option else list(value)
+                elif repeat_policy == "repeat":
+                    return list(itertools.chain([option, x] for x in value)) if option else list(value)
+                elif type(repeat_policy) is str:
+                    return [option, repeat_policy.join(value)] if option else repeat_policy.join(value)
+                elif repeat_policy is None:
+                    raise TypeError(f"list-type parameter '{name}' does not have a repeat policy set")
+                else:
+                    raise TypeError(f"unknown repeat policy '{repeat_policy}'")
+            else:
+                return [option, value] if option else [value]
+
+        # check for missing parameters and collect positionals
+
+        pos_args = [], []
+
+        for name, schema in self.inputs_outputs.items():
+            if schema.required and name not in value_dict:
+                raise RuntimeError(f"required parameter '{name}' is missing")
+            if name in value_dict:
+                positional_first = get_policy(schema, 'positional_head') 
+                positional = get_policy(schema, 'positional') or positional_first
+                skip = get_policy(schema, 'skip') or (schema.implicit and get_policy(schema, 'skip_implicits'))
+                if positional:
+                    if not skip:
+                        pargs = pos_args[0 if positional_first else 1]
+                        value = stringify_argument(name, value_dict[name], schema)
+                        if type(value) is list:
+                            pargs += value
+                        elif value is not None:
+                            pargs.append(value)
+                    value_dict.pop(name)
+
+        args = []
+                    
+        # now check for optional parameters that remain in the dict
+        for name, value in value_dict.items():
+            if name not in self.inputs_outputs:
+                raise RuntimeError(f"unknown parameter '{name}'")
+            schema = self.inputs_outputs[name]
+
+            skip = get_policy(schema, 'skip') or (schema.implicit and get_policy(schema, 'skip_implicits'))
+            if skip:
+                continue
+
+            option = (get_policy(schema, 'prefix') or "--") + (schema.alias or name)
+
+            # True values map to a single option
+            if schema.dtype == "bool" and value:
+                args.append(option)
+            else:
+                value = stringify_argument(name, value, schema, option=option)
+                if type(value) is list:
+                    args += value
+                elif value is not None:
+                    args.append(value)
+
+        return pos_args[0] + args + pos_args[1]
+
+
+    @property
+    def runtime_status(self):
+        return self._runtime_status
+
+    def reset_runtime_status(self):
+        self._runtime_status = None
+
+    def apply_output_wranglers(self, output, severity):
+        suppress = False
+        modified_output = output
+        for regex, replace, actions in self._wranglers:
+            if regex.search(output):
+                if replace is not None:
+                    modified_output = regex.sub(replace, output)
+                for action in actions:
+                    if type(action) is int:
+                        severity = action
+                    elif action is self.ACTION_SUPPRESS:
+                        suppress = True
+                    elif action is self.ACTION_DECLARE_FAILURE and self._runtime_status is None:
+                        self._runtime_status  = False
+                        modified_output = "[FAILURE] " + modified_output
+                        severity = logging.ERROR
+                    elif action is self.ACTION_DECLARE_SUCCESS and self._runtime_status is None:
+                        self._runtime_status = True
+                        modified_output = "[SUCCESS] " + modified_output
+        return (None, 0) if suppress else (modified_output, severity)
