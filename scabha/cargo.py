@@ -8,6 +8,7 @@ from collections import OrderedDict
 from .exceptions import CabValidationError, DefinitionError, SchemaError
 from . import validate
 from .validate import validate_parameters
+import scabha
 
 ## almost supported by omegaconf, see https://github.com/omry/omegaconf/issues/144, for now just use Any
 ListOrString = Any   
@@ -108,6 +109,8 @@ class Cargo(object):
         self._inputs_outputs = None
         # pausterized name
         self.name_ = re.sub(r'\W', '_', self.name or "")  # pausterized name
+        # config object
+        self.config = None
 
     @property
     def inputs_outputs(self):
@@ -124,13 +127,44 @@ class Cargo(object):
     def missing_params(self):
         return {name: schema for name, schema in self.inputs_outputs.items() if schema.required and name not in self.params}
 
-    def finalize(self, config, full_name=None, log=None):
-        self.log = log
+    @property
+    def unresolved_params(self):
+        return [name for name, value in self.params.items() if type(value) is validate.Unresolved]
 
-    def validate(self, config, params: Optional[Dict[str, Any]] = None, subst: Optional[Dict[str, Any]] = None):
-        pass
+    @property 
+    def finalized(self):
+        return self.config is not None
+
+    def finalize(self, config, log=None, full_name=None):
+        self.config = config
+        self.log = log or scabha.logger()
+
+    def prevalidate(self, params: Optional[Dict[str, Any]]):
+        """Does pre-validation. No parameter substitution is done, but will check for missing params and such"""
+        assert(self.finalized)
+        self.params = validate_parameters(params, self.inputs_outputs, defaults=self.defaults)
+
+    def validate_inputs(self, params: Optional[Dict[str, Any]], subst: Optional[Dict[str, Any]]):
+        """Validates inputs and output names. Parameter substitution is done. 
+        If output=False, inputs checked fully, and outputs checked for consistency but not for existence.
+        If output=True, only outputs are checked for consistency and existence.
+        """
+        assert(self.finalized)
+        # create "self" namespace from specified parameters
+        self.params.update(**validate_parameters(params, self.inputs_outputs, subst, defaults=self.defaults))
+        return self.params
+
+    def validate_outputs(self, params: Optional[Dict[str, Any]], subst: Optional[Dict[str, Any]]):
+        """Validates outputs. Parameter substitution is done. 
+        """
+        assert(self.finalized)
+        # create "self" namespace from specified parameters
+        self.params.update(**validate_parameters(params, self.outputs, subst, defaults=self.defaults, output=True, ignore_unknowns=True))
+        return self.params
+
 
     def update_parameter(self, name, value):
+        assert(self.finalized)
         self.params[name] = value
 
     def make_substitition_namespace(self):
@@ -205,10 +239,6 @@ class Cab(Cargo):
                 raise CabValidationError(f"wrangler entry {match} is not a valid regular expression")
             self._wranglers.append((re.compile(match), replace, actions))
         self._runtime_status = None
-
-
-    def validate(self, config, params: Optional[Dict[str, Any]] = None, subst: Optional[Dict[str, Any]] = None):
-        self.params = validate_parameters(params, self.inputs_outputs, defaults=self.defaults, subst=subst)
 
 
     @property
@@ -298,7 +328,7 @@ class Cab(Cargo):
                 # apply formatting policies
                 if format_list_policy:
                     if len(format_list_policy) != len(value):
-                        raise SchemaError("length of format_list_policy does not match length of '{name}'")
+                        raise CabValidationError("length of format_list_policy does not match length of '{name}'", log=self.log)
                     value = [fmt.format(*value, **value_dict) for fmt in format_list_policy]
                 elif format_policy:
                     value = [format_policy.format(x, **value_dict) for x in value]
@@ -323,9 +353,9 @@ class Cab(Cargo):
                 elif type(repeat_policy) is str:
                     return [option, repeat_policy.join(value)] if option else repeat_policy.join(value)
                 elif repeat_policy is None:
-                    raise TypeError(f"list-type parameter '{name}' does not have a repeat policy set")
+                    raise CabValidationError(f"list-type parameter '{name}' does not have a repeat policy set", log=self.log)
                 else:
-                    raise TypeError(f"unknown repeat policy '{repeat_policy}'")
+                    raise SchemaError(f"unknown repeat policy '{repeat_policy}'", log=self.log)
             else:
                 return [option, value] if option else [value]
 
@@ -335,7 +365,7 @@ class Cab(Cargo):
 
         for name, schema in self.inputs_outputs.items():
             if schema.required and name not in value_dict:
-                raise RuntimeError(f"required parameter '{name}' is missing")
+                raise CabValidationError(f"required parameter '{name}' is missing", log=self.log)
             if name in value_dict:
                 positional_first = get_policy(schema, 'positional_head') 
                 positional = get_policy(schema, 'positional') or positional_first
@@ -404,3 +434,8 @@ class Cab(Cargo):
                         self._runtime_status = True
                         modified_output = "[SUCCESS] " + modified_output
         return (None, 0) if suppress else (modified_output, severity)
+
+
+
+
+

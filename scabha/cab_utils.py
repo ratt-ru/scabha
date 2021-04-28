@@ -61,9 +61,9 @@ def build_cab_parameters(cab):
             elif type(repeat_policy) is str:
                 return repeat_policy.join(value)
             elif repeat_policy is None:
-                raise TypeError(f"list-type parameter '{name}' does not have a repeat policy set")
+                raise SchemaError(f"list-type parameter '{name}' does not have a repeat policy set")
             else:
-                raise TypeError(f"unknown repeat policy '{repeat_policy}'")
+                raise SchemaError(f"unknown repeat policy '{repeat_policy}'")
         else:
             return value
 
@@ -96,7 +96,7 @@ def build_cab_parameters(cab):
 
         prefix = get_policy(schema, 'prefix')
         if prefix is None:
-            raise RuntimeError(f"parameter prefix unset")
+            raise SchemaError(f"parameter prefix unset")
 
         option = prefix + name
         
