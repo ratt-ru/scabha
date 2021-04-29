@@ -1,6 +1,7 @@
 from collections import OrderedDict
 import re
 import dataclasses
+import os.path, glob
 
 from omegaconf.omegaconf import OmegaConf
 from omegaconf.errors import ConfigAttributeError
@@ -13,7 +14,7 @@ from typing import *
 class File(str):
     pass
 
-class Directory(str):
+class Directory(File):
     pass
 
 class MS(Directory):
@@ -43,10 +44,12 @@ def validate_schema(schema: Dict[str, Any]):
 
 
 
-def validate_parameters(params: Dict[str, Any], schema: Dict[str, Any], 
+def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any], 
                         subst: Optional[Dict[str, Any]] = None,
                         defaults: Optional[Dict[str, Any]] = None,
-                        ignore_unknowns = False, output=False
+                        check_unknowns=True,    
+                        check_required=True,
+                        check_exist=True
                         ) -> Dict[str, Any]:
     """Validates a dict of parameter values against a given schema 
 
@@ -56,7 +59,6 @@ def validate_parameters(params: Dict[str, Any], schema: Dict[str, Any],
         subst  (Dict[str, Any], optional): dictionary of substitutions to be made in str-valued parameters (using .format(**subst))
                                  if missing, str-valued parameters with {} in them will be marked as Unresolved.
         defaults (Dict[str, Any], optional): dictionary of default values to be used when a value is missing
-        ignore_unknowns (bool):    if False, then params missing from the schema will raise a validation error
 
     Raises:
         ParameterValidationError: [description]
@@ -70,9 +72,9 @@ def validate_parameters(params: Dict[str, Any], schema: Dict[str, Any],
         add options to propagate all errors out (as values of type Error) in place of exceptions?
     """
     # check for unknowns
-    if not ignore_unknowns:
+    if check_unknowns:
         for name in params:
-            if name not in schema:
+            if name not in schemas:
                 raise ParameterValidationError(f"unknown parameter {name}")
         
     inputs = dict(**params)
@@ -83,18 +85,10 @@ def validate_parameters(params: Dict[str, Any], schema: Dict[str, Any],
     defaults = defaults or {}
     unresolved = {}
 
-    # add missing defaults and/or implicit parameters
-    for name, parmdef in schema.items():
-        if name in inputs:
-            if parmdef.implicit is not None:
-                raise ParameterValidationError(f"implicit parameter {name} was supplied explicitly")
-        else:
-            if parmdef.implicit is not None:
-                if name in defaults:
-                    raise SchemaError(f"implicit parameter {name} also has a default value")
-                inputs[name] = parmdef.implicit  ## TODO: move implcits to Stimela
-            elif name in defaults:
-                inputs[name] = defaults[name]
+    # add missing defaults 
+    for name in schemas:
+        if name not in inputs and name in defaults:
+            inputs[name] = defaults[name]
 
     # do substitutions if asked to
     # since substitutions can potentially reference each other, repeat this until things sette
@@ -130,15 +124,22 @@ def validate_parameters(params: Dict[str, Any], schema: Dict[str, Any],
                 unresolved[name] = Unresolved(value)
                 del inputs[name]
 
+    # check that required args are present
+    if check_required:
+        missing = [name for name, schema in schemas.items() if schema.required and name not in inputs]
+        if missing:
+                raise ParameterValidationError(f"missing required parameters: {', '.join(missing)}")
+                
     # create dataclass from parameter schema
+    dtypes = {}
     fields = []
-    for name, parmdef in schema.items():
+    for name, schema in schemas.items():
         if name in inputs:
             try:
-                dtype = eval(parmdef.dtype, globals())
+                dtypes[name] = dtype_impl = eval(schema.dtype, globals())
             except Exception as exc:
-                raise SchemaError(f"invalid {name}.dtype={parmdef.dtype}")
-            fields.append((name, dtype))
+                raise SchemaError(f"invalid {name}.dtype = {schema.dtype}")
+            fields.append((name, dtype_impl))
 
     dcls = dataclasses.make_dataclass("Parameters", fields)
     
@@ -147,16 +148,58 @@ def validate_parameters(params: Dict[str, Any], schema: Dict[str, Any],
 
     # validate
     try:   
-        validated = pcls(**{name: value for name, value in inputs.items() if name in schema})
+        validated = pcls(**{name: value for name, value in inputs.items() if name in schemas})
     except pydantic.ValidationError as exc:
         raise ParameterValidationError(f"{exc}")
 
-    ## TODO: check "choices" field
-    ## TODO: check File, Directory and MS typs, if asked to
-
     validated = dataclasses.asdict(validated)
+
+    # check choice-type parameters
+    for name, value in validated.items():
+        schema = schemas[name]
+        if schema.choices and value not in schema.choices:
+            raise ParameterValidationError(f"{name}: invalid value '{value}'")
+
+
+    # check Files etc. and expand globs
+    if check_exist:
+        for name, value in validated.items():
+            dtype = dtypes[name]
+            if dtype in (File, Directory, MS, List[File], List[Directory], List[MS]):
+                # match to existing file(s)
+                files = glob.glob(value)
+                if not files:
+                    if schemas[name].required:
+                        raise ParameterValidationError(f"{name}: nothing matches '{value}'")
+                    else:
+                        continue
+
+                # check for single file/dir
+                if dtype in (File, Directory, MS):
+                    if len(files) > 1:
+                        raise ParameterValidationError(f"{name}: multiple matches to '{value}'")
+                    if dtype is File:
+                        if not os.path.isfile(files[0]):
+                            raise ParameterValidationError(f"{name}: '{value}' is not a regular file")
+                    else:
+                        if not os.path.isdir(files[0]):
+                            raise ParameterValidationError(f"{name}: '{value}' is not a directory")
+                    validated[name] = files[0]
+
+                # else make list
+                else:
+                    if dtype is List[File]:
+                        if not all(os.path.isfile(f) for f in files):
+                            raise ParameterValidationError(f"{name}: '{value}' matches non-files")
+                    else:
+                        if not all(os.path.isdir(f) for f in files):
+                            raise ParameterValidationError(f"{name}: '{value}' matches non-directories")
+                    validated[name] = files
 
     # add in unresolved values
     validated.update(**unresolved)
+
+    ## TODO: check "choices" field
+
 
     return validated

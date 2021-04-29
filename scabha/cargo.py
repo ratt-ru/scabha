@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from omegaconf.omegaconf import MISSING, OmegaConf
 from collections import OrderedDict
 
-from .exceptions import CabValidationError, DefinitionError, SchemaError
+from .exceptions import CabValidationError, ParameterValidationError, DefinitionError, SchemaError
 from . import validate
 from .validate import validate_parameters
 import scabha
@@ -93,6 +93,8 @@ class Parameter(object):
 
     policies: ParameterPolicies = ParameterPolicies()
 
+
+
 @dataclass
 class Cargo(object):
     name: Optional[str] = None                    # cab name. (If None, use image or command name)
@@ -109,8 +111,8 @@ class Cargo(object):
         self._inputs_outputs = None
         # pausterized name
         self.name_ = re.sub(r'\W', '_', self.name or "")  # pausterized name
-        # config object
-        self.config = None
+        # config and logger objects
+        self.config = self.log = None
 
     @property
     def inputs_outputs(self):
@@ -133,33 +135,54 @@ class Cargo(object):
 
     @property 
     def finalized(self):
-        return self.config is not None
+        return self.log is not None
 
-    def finalize(self, config, log=None, full_name=None):
-        self.config = config
-        self.log = log or scabha.logger()
+    def finalize(self, config=None, log=None, full_name=None):
+        if not self.finalized:
+            self.config = config
+            self.log = log or scabha.logger()
 
     def prevalidate(self, params: Optional[Dict[str, Any]]):
         """Does pre-validation. No parameter substitution is done, but will check for missing params and such"""
-        assert(self.finalized)
-        self.params = validate_parameters(params, self.inputs_outputs, defaults=self.defaults)
+        self.finalize()
+        self.params = validate_parameters(params, self.inputs_outputs, defaults=self.defaults,
+                                        check_unknowns=True, check_required=False, check_exist=False)
+        return self.params
 
-    def validate_inputs(self, params: Optional[Dict[str, Any]], subst: Optional[Dict[str, Any]]):
+    def _add_implicits(self, params: Dict[str, Any], schemas: Dict[str, Parameter]):
+        # add implicit inputs
+        for name, schema in schemas.items():
+            if schema.implicit is not None:
+                if name in params:
+                    raise ParameterValidationError(f"implicit parameter {name} was supplied explicitly")
+                if name in self.defaults:
+                   raise SchemaError(f"implicit parameter {name} also has a default value")
+                params[name] = schema.implicit
+
+    def validate_inputs(self, params: Dict[str, Any], subst: Optional[Dict[str, Any]]):
         """Validates inputs and output names. Parameter substitution is done. 
         If output=False, inputs checked fully, and outputs checked for consistency but not for existence.
         If output=True, only outputs are checked for consistency and existence.
         """
         assert(self.finalized)
-        # create "self" namespace from specified parameters
-        self.params.update(**validate_parameters(params, self.inputs_outputs, subst, defaults=self.defaults))
+        # add implicit inputs
+        self._add_implicits(params, self.inputs)
+        # check inputs
+        self.params.update(**validate_parameters(params, self.inputs, subst, defaults=self.defaults, 
+                                                check_unknowns=False, check_required=True, check_exist=True))
+        # check outputs
+        self.params.update(**validate_parameters(params, self.outputs, subst, defaults=self.defaults, 
+                                                check_unknowns=False, check_required=False, check_exist=False))
         return self.params
 
-    def validate_outputs(self, params: Optional[Dict[str, Any]], subst: Optional[Dict[str, Any]]):
+    def validate_outputs(self, params: Dict[str, Any], subst: Optional[Dict[str, Any]]):
         """Validates outputs. Parameter substitution is done. 
         """
         assert(self.finalized)
-        # create "self" namespace from specified parameters
-        self.params.update(**validate_parameters(params, self.outputs, subst, defaults=self.defaults, output=True, ignore_unknowns=True))
+        # add implicit outputs
+        self._add_implicits(params, self.outputs)
+        self.params.update(**validate_parameters(params, self.outputs, subst, defaults=self.defaults, 
+                                                check_unknowns=False, check_required=True, check_exist=True))
         return self.params
 
 
