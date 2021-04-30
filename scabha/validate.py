@@ -3,7 +3,7 @@ import re
 import dataclasses
 import os.path, glob
 
-from omegaconf.omegaconf import OmegaConf
+from omegaconf import OmegaConf, ListConfig, DictConfig
 from omegaconf.errors import ConfigAttributeError
 import pydantic
 import pydantic.dataclasses
@@ -29,6 +29,11 @@ class Unresolved(object):
 
     def __str__(self):
         return f"Unresolved({self.value})"
+
+
+def join_quote(values):
+    return "'" + "', '".join(values) + "'" if values else ""
+
 
 def validate_schema(schema: Dict[str, Any]):
     """Checks a set of parameter schemas for internal consistency.
@@ -75,15 +80,12 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
     if check_unknowns:
         for name in params:
             if name not in schemas:
-                raise ParameterValidationError(f"unknown parameter {name}")
+                raise ParameterValidationError(f"unknown parameter '{name}'")
         
-    inputs = dict(**params)
-
-    # omegaconf's DictConfig objects don't support derived types such as validation.Error, so for the purpose of
-    # substitutions, convert the params into a regular dict first
-    inputs = dict(**params)
+    # split inputs into unresolved substitutions, and proper inputs
+    inputs = {name: value for name, value in params.items() if type(value) is not Unresolved}
+    unresolved = {name: value for name, value in params.items() if type(value) is Unresolved}
     defaults = defaults or {}
-    unresolved = {}
 
     # add missing defaults 
     for name in schemas:
@@ -117,7 +119,7 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
                 break 
         else:
             raise ParameterValidationError("recursion limit exceeded while evaluating {}-substitutions. This is usally caused by cyclic (cross-)references.")
-    # else check for substitutions and swap in "unresolved" objects
+    # else check for substitutions and move them to the unresolved dict
     else:
         for name, value in list(inputs.items()):
             if isinstance(value, str) and not isinstance(value, Error) and re.search("{[^{]", value):
@@ -126,11 +128,12 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
 
     # check that required args are present
     if check_required:
-        missing = [name for name, schema in schemas.items() if schema.required and name not in inputs]
+        missing = [name for name, schema in schemas.items() if schema.required and name not in inputs and name not in unresolved]
         if missing:
-                raise ParameterValidationError(f"missing required parameters: {', '.join(missing)}")
+                raise ParameterValidationError(f"missing required parameters: {join_quote(missing)}")
                 
     # create dataclass from parameter schema
+    validated = {}
     dtypes = {}
     fields = []
     for name, schema in schemas.items():
@@ -140,9 +143,12 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
             except Exception as exc:
                 raise SchemaError(f"invalid {name}.dtype = {schema.dtype}")
             fields.append((name, dtype_impl))
+            
+            # OmegaConf dicts/lists need to be converted to standard contrainers for pydantic to take them
+            if isinstance(inputs[name], (ListConfig, DictConfig)):
+                inputs[name] = OmegaConf.to_container(inputs[name])
 
     dcls = dataclasses.make_dataclass("Parameters", fields)
-    
     # convert this to a pydantic dataclass which does validation
     pcls = pydantic.dataclasses.dataclass(dcls)
 
@@ -150,7 +156,8 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
     try:   
         validated = pcls(**{name: value for name, value in inputs.items() if name in schemas})
     except pydantic.ValidationError as exc:
-        raise ParameterValidationError(f"{exc}")
+        errors = [f"'{'.'.join(err['loc'])}': {err['msg']}" for err in exc.errors()]
+        raise ParameterValidationError(', '.join(errors))
 
     validated = dataclasses.asdict(validated)
 

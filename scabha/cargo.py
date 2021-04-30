@@ -2,7 +2,7 @@ import os.path, re, stat, itertools, logging
 from typing import Any, List, Dict, Optional, Union
 from enum import Enum
 from dataclasses import dataclass, field
-from omegaconf.omegaconf import MISSING, OmegaConf
+from omegaconf import MISSING, OmegaConf, ListConfig, DictConfig
 from collections import OrderedDict
 
 from .exceptions import CabValidationError, ParameterValidationError, DefinitionError, SchemaError
