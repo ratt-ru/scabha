@@ -71,7 +71,7 @@ class Parameter(object):
     """Parameter (of cab or recipe)"""
     info: str = ""
     # for input parameters, this flag indicates a read-write (aka input-output aka mixed-mode) parameter e.g. an MS
-    writeable: bool = False
+    writable: bool = False
     # data type
     dtype: str = "str"
     # for file-type parameters, specifies that the filename is implicitly set inside the step (i.e. not a free parameter)
