@@ -98,6 +98,12 @@ def build_cab_parameters(cab):
         if prefix is None:
             raise SchemaError(f"parameter prefix unset")
 
+        replacements = get_policy(schema, 'replace')
+        from scabha import logger
+        logger.info(f"{name} {replacements}")
+        for rep_from, rep_to in replacements.items():
+            name = name.replace(rep_from, rep_to)
+
         option = prefix + name
         
         # True values map to a single option

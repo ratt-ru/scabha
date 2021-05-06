@@ -171,6 +171,8 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
     # check Files etc. and expand globs
     if check_exist:
         for name, value in validated.items():
+            if isinstance(value, Error):
+                continue
             dtype = dtypes[name]
             if dtype in (File, Directory, MS, List[File], List[Directory], List[MS]):
                 # match to existing file(s)

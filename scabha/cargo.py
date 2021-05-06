@@ -44,10 +44,13 @@ class ParameterPolicies(object):
     # if set, a string-type value will be split into a list of arguments using this separator
     split: Optional[str] = None
 
+    # dict of character replacements
+    replace: Optional[Dict[str, str]] = None
+    
     # Value formatting policies.
     # If set, specifies {}-type format strings used to convert the value(s) to string(s).
     # For a non-list value:
-    #   * if 'format_list' is set, formatts the value into a lisyt of strings as fmt[i].format(value, **dict)
+    #   * if 'format_list' is set, formatts the value into a list of strings as fmt[i].format(value, **dict)
     #     example:  ["{0}", "{0}"] will simply repeat the value twice
     #   * if 'format' is set, value is formatted as format.format(value, **dict) 
     # For a list-type value:
@@ -72,7 +75,7 @@ class Parameter(object):
     """Parameter (of cab or recipe)"""
     info: str = ""
     # for input parameters, this flag indicates a read-write (aka input-output aka mixed-mode) parameter e.g. an MS
-    writeable: bool = False
+    writable: bool = False
     # data type
     dtype: str = "str"
     # for file-type parameters, specifies that the filename is implicitly set inside the step (i.e. not a free parameter)
@@ -414,6 +417,12 @@ class Cab(Cargo):
             skip = get_policy(schema, 'skip') or (schema.implicit and get_policy(schema, 'skip_implicits'))
             if skip:
                 continue
+
+            # apply replacementss
+            replacements = get_policy(schema, 'replace')
+            if replacements:
+                for rep_from, rep_to in replacements.items():
+                    name = name.replace(rep_from, rep_to)
 
             option = (get_policy(schema, 'prefix') or "--") + (schema.alias or name)
 
