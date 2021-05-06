@@ -79,6 +79,8 @@ def set_logger(logger):
     log = logger
     exceptions.set_logger(logger)
 
+def logger():
+    return init_logger()
 
 def report_memory():
     """Reports memory status"""

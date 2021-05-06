@@ -1,7 +1,9 @@
 from collections import OrderedDict
+import re
 import dataclasses
+import os.path, glob
 
-from omegaconf.omegaconf import OmegaConf
+from omegaconf import OmegaConf, ListConfig, DictConfig
 from omegaconf.errors import ConfigAttributeError
 import pydantic
 import pydantic.dataclasses
@@ -12,7 +14,7 @@ from typing import *
 class File(str):
     pass
 
-class Directory(str):
+class Directory(File):
     pass
 
 class MS(Directory):
@@ -20,6 +22,18 @@ class MS(Directory):
 
 class Error(str):
     pass
+
+@dataclasses.dataclass
+class Unresolved(object):
+    value: str
+
+    def __str__(self):
+        return f"Unresolved({self.value})"
+
+
+def join_quote(values):
+    return "'" + "', '".join(values) + "'" if values else ""
+
 
 def validate_schema(schema: Dict[str, Any]):
     """Checks a set of parameter schemas for internal consistency.
@@ -35,9 +49,12 @@ def validate_schema(schema: Dict[str, Any]):
 
 
 
-def validate_parameters(params: Dict[str, Any], schema: Dict[str, Any], 
+def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any], 
                         subst: Optional[Dict[str, Any]] = None,
-                        defaults: Optional[Dict[str, Any]] = None
+                        defaults: Optional[Dict[str, Any]] = None,
+                        check_unknowns=True,    
+                        check_required=True,
+                        check_exist=True
                         ) -> Dict[str, Any]:
     """Validates a dict of parameter values against a given schema 
 
@@ -45,6 +62,7 @@ def validate_parameters(params: Dict[str, Any], schema: Dict[str, Any],
         params (Dict[str, Any]):   map of input parameter values
         schema (Dict[str, Any]):   map of parameter names to schemas. Each schema must contain a dtype field and a choices field.
         subst  (Dict[str, Any], optional): dictionary of substitutions to be made in str-valued parameters (using .format(**subst))
+                                 if missing, str-valued parameters with {} in them will be marked as Unresolved.
         defaults (Dict[str, Any], optional): dictionary of default values to be used when a value is missing
 
     Raises:
@@ -59,27 +77,20 @@ def validate_parameters(params: Dict[str, Any], schema: Dict[str, Any],
         add options to propagate all errors out (as values of type Error) in place of exceptions?
     """
     # check for unknowns
-    for name in params:
-        if name not in schema:
-            raise ParameterValidationError(f"unknown parameter {name}")
-
-    # omegaconf's DictConfig objects don't support derived types such as validation.Error, so for the purpose of
-    # substitutions, convert the params into a regular dict first
-    inputs = dict(**params)
+    if check_unknowns:
+        for name in params:
+            if name not in schemas:
+                raise ParameterValidationError(f"unknown parameter '{name}'")
+        
+    # split inputs into unresolved substitutions, and proper inputs
+    inputs = {name: value for name, value in params.items() if type(value) is not Unresolved}
+    unresolved = {name: value for name, value in params.items() if type(value) is Unresolved}
     defaults = defaults or {}
 
-    # add missing defaults and/or implicit parameters
-    for name, parmdef in schema.items():
-        if name in inputs:
-            if parmdef.implicit is not None:
-                raise ParameterValidationError(f"implicit parameter {name} was supplied excplicitly")
-        else:
-            if parmdef.implicit is not None:
-                if name in defaults:
-                    raise SchemaError(f"implicit parameter {name} also has a default value")
-                inputs[name] = parmdef.implicit
-            elif name in defaults:
-                inputs[name] = defaults[name]
+    # add missing defaults 
+    for name in schemas:
+        if name not in inputs and name in defaults:
+            inputs[name] = defaults[name]
 
     # do substitutions if asked to
     # since substitutions can potentially reference each other, repeat this until things sette
@@ -108,28 +119,94 @@ def validate_parameters(params: Dict[str, Any], schema: Dict[str, Any],
                 break 
         else:
             raise ParameterValidationError("recursion limit exceeded while evaluating {}-substitutions. This is usally caused by cyclic (cross-)references.")
+    # else check for substitutions and move them to the unresolved dict
+    else:
+        for name, value in list(inputs.items()):
+            if isinstance(value, str) and not isinstance(value, Error) and re.search("{[^{]", value):
+                unresolved[name] = Unresolved(value)
+                del inputs[name]
 
+    # check that required args are present
+    if check_required:
+        missing = [name for name, schema in schemas.items() if schema.required and name not in inputs and name not in unresolved]
+        if missing:
+                raise ParameterValidationError(f"missing required parameters: {join_quote(missing)}")
+                
     # create dataclass from parameter schema
+    validated = {}
+    dtypes = {}
     fields = []
-    for name, parmdef in schema.items():
+    for name, schema in schemas.items():
         if name in inputs:
             try:
-                dtype = eval(parmdef.dtype, globals())
+                dtypes[name] = dtype_impl = eval(schema.dtype, globals())
             except Exception as exc:
-                raise SchemaError(f"invalid {name}.dtype={parmdef.dtype}")
-            fields.append((name, dtype))
+                raise SchemaError(f"invalid {name}.dtype = {schema.dtype}")
+            fields.append((name, dtype_impl))
+            
+            # OmegaConf dicts/lists need to be converted to standard contrainers for pydantic to take them
+            if isinstance(inputs[name], (ListConfig, DictConfig)):
+                inputs[name] = OmegaConf.to_container(inputs[name])
 
     dcls = dataclasses.make_dataclass("Parameters", fields)
-    
     # convert this to a pydantic dataclass which does validation
     pcls = pydantic.dataclasses.dataclass(dcls)
 
     # validate
     try:   
-        validated = pcls(**inputs)
+        validated = pcls(**{name: value for name, value in inputs.items() if name in schemas})
     except pydantic.ValidationError as exc:
-        raise ParameterValidationError(f"{exc}")
+        errors = [f"'{'.'.join(err['loc'])}': {err['msg']}" for err in exc.errors()]
+        raise ParameterValidationError(', '.join(errors))
+
+    validated = dataclasses.asdict(validated)
+
+    # check choice-type parameters
+    for name, value in validated.items():
+        schema = schemas[name]
+        if schema.choices and value not in schema.choices:
+            raise ParameterValidationError(f"{name}: invalid value '{value}'")
+
+
+    # check Files etc. and expand globs
+    if check_exist:
+        for name, value in validated.items():
+            dtype = dtypes[name]
+            if dtype in (File, Directory, MS, List[File], List[Directory], List[MS]):
+                # match to existing file(s)
+                files = glob.glob(value)
+                if not files:
+                    if schemas[name].required:
+                        raise ParameterValidationError(f"{name}: nothing matches '{value}'")
+                    else:
+                        continue
+
+                # check for single file/dir
+                if dtype in (File, Directory, MS):
+                    if len(files) > 1:
+                        raise ParameterValidationError(f"{name}: multiple matches to '{value}'")
+                    if dtype is File:
+                        if not os.path.isfile(files[0]):
+                            raise ParameterValidationError(f"{name}: '{value}' is not a regular file")
+                    else:
+                        if not os.path.isdir(files[0]):
+                            raise ParameterValidationError(f"{name}: '{value}' is not a directory")
+                    validated[name] = files[0]
+
+                # else make list
+                else:
+                    if dtype is List[File]:
+                        if not all(os.path.isfile(f) for f in files):
+                            raise ParameterValidationError(f"{name}: '{value}' matches non-files")
+                    else:
+                        if not all(os.path.isdir(f) for f in files):
+                            raise ParameterValidationError(f"{name}: '{value}' matches non-directories")
+                    validated[name] = files
+
+    # add in unresolved values
+    validated.update(**unresolved)
 
     ## TODO: check "choices" field
 
-    return dataclasses.asdict(validated)
+
+    return validated
