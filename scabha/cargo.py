@@ -137,7 +137,7 @@ class Cargo(object):
     def finalized(self):
         return self.log is not None
 
-    def finalize(self, config=None, log=None, full_name=None):
+    def finalize(self, config=None, log=None, hier_name=None, nesting=0):
         if not self.finalized:
             self.config = config
             self.log = log or scabha.logger()
@@ -146,7 +146,7 @@ class Cargo(object):
         """Does pre-validation. No parameter substitution is done, but will check for missing params and such"""
         self.finalize()
         self.params = validate_parameters(params, self.inputs_outputs, defaults=self.defaults,
-                                        check_unknowns=True, check_required=False, check_exist=False)
+                                          check_unknowns=True, check_required=False, check_exist=False)
         return self.params
 
     def _add_implicits(self, params: Dict[str, Any], schemas: Dict[str, Parameter]):
