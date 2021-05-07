@@ -44,10 +44,13 @@ class ParameterPolicies(object):
     # if set, a string-type value will be split into a list of arguments using this separator
     split: Optional[str] = None
 
+    # dict of character replacements
+    replace: Optional[Dict[str, str]] = None
+    
     # Value formatting policies.
     # If set, specifies {}-type format strings used to convert the value(s) to string(s).
     # For a non-list value:
-    #   * if 'format_list' is set, formatts the value into a lisyt of strings as fmt[i].format(value, **dict)
+    #   * if 'format_list' is set, formatts the value into a list of strings as fmt[i].format(value, **dict)
     #     example:  ["{0}", "{0}"] will simply repeat the value twice
     #   * if 'format' is set, value is formatted as format.format(value, **dict) 
     # For a list-type value:
@@ -137,7 +140,7 @@ class Cargo(object):
     def finalized(self):
         return self.log is not None
 
-    def finalize(self, config=None, log=None, full_name=None):
+    def finalize(self, config=None, log=None, hier_name=None, nesting=0):
         if not self.finalized:
             self.config = config
             self.log = log or scabha.logger()
@@ -146,7 +149,7 @@ class Cargo(object):
         """Does pre-validation. No parameter substitution is done, but will check for missing params and such"""
         self.finalize()
         self.params = validate_parameters(params, self.inputs_outputs, defaults=self.defaults,
-                                        check_unknowns=True, check_required=False, check_exist=False)
+                                          check_unknowns=True, check_required=False, check_exist=False)
         return self.params
 
     def _add_implicits(self, params: Dict[str, Any], schemas: Dict[str, Parameter]):
@@ -414,6 +417,12 @@ class Cab(Cargo):
             skip = get_policy(schema, 'skip') or (schema.implicit and get_policy(schema, 'skip_implicits'))
             if skip:
                 continue
+
+            # apply replacementss
+            replacements = get_policy(schema, 'replace')
+            if replacements:
+                for rep_from, rep_to in replacements.items():
+                    name = name.replace(rep_from, rep_to)
 
             option = (get_policy(schema, 'prefix') or "--") + (schema.alias or name)
 
