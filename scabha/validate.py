@@ -154,59 +154,56 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
     pcls = pydantic.dataclasses.dataclass(dcls)
 
     # check Files etc. and expand globs
-    if check_exist:
-        for name, value in inputs.items():
-            # get schema from those that need validation, skip if not in schemas
-            schema = schemas.get(name)
-            if schema is None:
-                continue
-            # skip errors
-            if isinstance(value, Error):
-                continue
-            dtype = dtypes[name]
+    for name, value in inputs.items():
+        # get schema from those that need validation, skip if not in schemas
+        schema = schemas.get(name)
+        if schema is None:
+            continue
+        # skip errors
+        if isinstance(value, Error):
+            continue
+        dtype = dtypes[name]
 
-            is_file = dtype in (File, Directory, MS)
-            is_file_list = dtype in (List[File], List[Directory], List[MS])
+        is_file = dtype in (File, Directory, MS)
+        is_file_list = dtype in (List[File], List[Directory], List[MS])
 
-            if is_file or is_file_list:
-                # match to existing file(s)
-                if type(value) is str:
-                    files = glob.glob(value)
-                elif type(value) in (list, tuple):
-                    files = value
+        if is_file or is_file_list:
+            # match to existing file(s)
+            if type(value) is str:
+                files = glob.glob(value)
+            elif type(value) in (list, tuple):
+                files = value
+            else:
+                raise ParameterValidationError(f"{name}: invalid type '{type(value)}'")
+
+            if not files:
+                if schema.required and check_exist:
+                    raise ParameterValidationError(f"{name}: nothing matches '{value}'")
                 else:
-                    raise ParameterValidationError(f"{name}: invalid type '{type(value)}'")
+                    inputs[name] = [] if is_file_list else ""
+                    continue
 
-                if not files:
-                    if schema.required:
-                        raise ParameterValidationError(f"{name}: nothing matches '{value}'")
-                    else:
-                        inputs[name] = [] if is_file_list else ""
-                        continue
-
-                # check for single file/dir
-                if dtype in (File, Directory, MS):
-                    if len(files) > 1:
-                        raise ParameterValidationError(f"{name}: multiple matches to '{value}'")
-                    if dtype is File:
-                        if not os.path.isfile(files[0]):
-                            raise ParameterValidationError(f"{name}: '{value}' is not a regular file")
-                    else:
-                        if not os.path.isdir(files[0]):
-                            raise ParameterValidationError(f"{name}: '{value}' is not a directory")
-                    inputs[name] = files[0]
-
-                # else make list
+            # check for single file/dir
+            if dtype in (File, Directory, MS):
+                if len(files) > 1:
+                    raise ParameterValidationError(f"{name}: multiple matches to '{value}'")
+                if dtype is File:
+                    if not os.path.isfile(files[0]):
+                        raise ParameterValidationError(f"{name}: '{value}' is not a regular file")
                 else:
-                    if dtype is List[File]:
-                        if not all(os.path.isfile(f) for f in files):
-                            raise ParameterValidationError(f"{name}: '{value}' matches non-files")
-                    else:
-                        if not all(os.path.isdir(f) for f in files):
-                            raise ParameterValidationError(f"{name}: '{value}' matches non-directories")
-                    inputs[name] = files
+                    if not os.path.isdir(files[0]):
+                        raise ParameterValidationError(f"{name}: '{value}' is not a directory")
+                inputs[name] = files[0]
 
-
+            # else make list
+            else:
+                if dtype is List[File]:
+                    if not all(os.path.isfile(f) for f in files):
+                        raise ParameterValidationError(f"{name}: '{value}' matches non-files")
+                else:
+                    if not all(os.path.isdir(f) for f in files):
+                        raise ParameterValidationError(f"{name}: '{value}' matches non-directories")
+                inputs[name] = files
 
     # validate
     try:   

@@ -162,30 +162,30 @@ class Cargo(object):
                    raise SchemaError(f"implicit parameter {name} also has a default value")
                 params[name] = schema.implicit
 
-    def validate_inputs(self, params: Dict[str, Any], subst: Optional[Dict[str, Any]]):
-        """Validates inputs and output names. Parameter substitution is done. 
-        If output=False, inputs checked fully, and outputs checked for consistency but not for existence.
-        If output=True, only outputs are checked for consistency and existence.
+    def validate_inputs(self, params: Dict[str, Any], subst: Optional[Dict[str, Any]], loosely=False):
+        """Validates inputs. Parameter substitution is done. 
+        If loosely is True, then doesn't check for required parameters, and doesn't check for files to exist etc.
         """
         assert(self.finalized)
         # add implicit inputs
         self._add_implicits(params, self.inputs)
         # check inputs
         self.params.update(**validate_parameters(params, self.inputs, subst, defaults=self.defaults, 
-                                                check_unknowns=False, check_required=True, check_exist=True))
+                                                check_unknowns=False, check_required=not loosely, check_exist=not loosely))
         # check outputs
         self.params.update(**validate_parameters(params, self.outputs, subst, defaults=self.defaults, 
                                                 check_unknowns=False, check_required=False, check_exist=False))
         return self.params
 
-    def validate_outputs(self, params: Dict[str, Any], subst: Optional[Dict[str, Any]]):
+    def validate_outputs(self, params: Dict[str, Any], subst: Optional[Dict[str, Any]], loosely=False):
         """Validates outputs. Parameter substitution is done. 
+        If loosely is True, then doesn't check for required parameters, and doesn't check for files to exist etc.
         """
         assert(self.finalized)
         # add implicit outputs
         self._add_implicits(params, self.outputs)
         self.params.update(**validate_parameters(params, self.outputs, subst, defaults=self.defaults, 
-                                                check_unknowns=False, check_required=True, check_exist=True))
+                                                check_unknowns=False, check_required=not loosely, check_exist=not loosely))
         return self.params
 
 
