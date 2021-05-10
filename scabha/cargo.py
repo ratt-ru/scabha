@@ -70,6 +70,8 @@ class CabManagement:        # defines common cab management behaviours
     wranglers: Optional[Dict[str, ListOrString]]   = EmptyDictDefault()   
 
 
+    
+
 @dataclass
 class Parameter(object):
     """Parameter (of cab or recipe)"""
@@ -89,12 +91,22 @@ class Parameter(object):
     # choices for an option-type parameter (should this be List[str]?)
     choices:  Optional[List[Any]] = ()
 
+    # default value
+    default: Optional[Any] = None
+
+    # list of aliases for this parameter (i.e. references to other parameters whose schemas/values this parameter shares)
+    aliases: Optional[List[str]] = ()
+
+    # if command-line option for underlying binary has a different name, specify it here
+    nom_de_guerre: Optional[str] = None
+
+    # policies object, specifying a non-default way to handle this parameter
+    policies: ParameterPolicies = ParameterPolicies()
+
     # inherited from Stimela 1 -- used to handle paremeters inside containers?
     # might need a re-think, but we can leave them in for now  
-    alias: Optional[str] = ""
     pattern: Optional[str] = MISSING
 
-    policies: ParameterPolicies = ParameterPolicies()
 
 
 
@@ -424,7 +436,7 @@ class Cab(Cargo):
                 for rep_from, rep_to in replacements.items():
                     name = name.replace(rep_from, rep_to)
 
-            option = (get_policy(schema, 'prefix') or "--") + (schema.alias or name)
+            option = (get_policy(schema, 'prefix') or "--") + (schema.nom_de_guerre or name)
 
             # True values map to a single option
             if schema.dtype == "bool" and value:

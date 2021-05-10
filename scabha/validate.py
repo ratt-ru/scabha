@@ -3,7 +3,7 @@ import re
 import dataclasses
 import os.path, glob
 
-from omegaconf import OmegaConf, ListConfig, DictConfig
+from omegaconf import OmegaConf, ListConfig, DictConfig, MISSING
 from omegaconf.errors import ConfigAttributeError
 import pydantic
 import pydantic.dataclasses
@@ -88,9 +88,13 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
     defaults = defaults or {}
 
     # add missing defaults 
-    for name in schemas:
-        if name not in inputs and name in defaults:
-            inputs[name] = defaults[name]
+    for name, schema in schemas.items():
+        if name not in inputs:
+            if name in defaults:
+                inputs[name] = defaults[name]
+            elif schema.default is not None:
+                inputs[name] = schema.default
+
 
     # do substitutions if asked to
     # since substitutions can potentially reference each other, repeat this until things sette
