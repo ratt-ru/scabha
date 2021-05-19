@@ -8,6 +8,7 @@ requirements = ["pyyaml",
                 "nose>=1.3.7",
                 "future-fstrings",
                 "omegaconf",
+                "pytest"
                 ],
 
 PACKAGE_NAME = "scabha"

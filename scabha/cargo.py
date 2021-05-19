@@ -1,4 +1,4 @@
-import os.path, re, stat, itertools, logging
+import os.path, re, stat, itertools, logging, yaml
 from typing import Any, List, Dict, Optional, Union
 from enum import Enum
 from dataclasses import dataclass, field
@@ -7,7 +7,7 @@ from collections import OrderedDict
 
 from .exceptions import CabValidationError, ParameterValidationError, DefinitionError, SchemaError
 from . import validate
-from .validate import validate_parameters
+from .validate import validate_parameters, SubstitutionNamespace
 import scabha
 
 ## almost supported by omegaconf, see https://github.com/omry/omegaconf/issues/144, for now just use Any
@@ -31,7 +31,7 @@ class ParameterPolicies(object):
     positional_head: Optional[bool] = None
     # for list-type values, use this as a separator to paste them together into one argument. Otherwise:
     #  * use "list" to pass list-type values as multiple arguments (--option X Y)
-    #  * use "repeat" to rpeat the option (--option X --option Y)
+    #  * use "repeat" to repeat the option (--option X --option Y)
     repeat: Optional[str] = None
     # prefix for non-positional arguments
     prefix: Optional[str] = None
@@ -180,13 +180,15 @@ class Cargo(object):
         """
         assert(self.finalized)
         # add implicit inputs
+        params = params.copy()
         self._add_implicits(params, self.inputs)
         # check inputs
-        self.params.update(**validate_parameters(params, self.inputs, subst, defaults=self.defaults, 
+        params.update(**validate_parameters(params, self.inputs, subst, defaults=self.defaults, 
                                                 check_unknowns=False, check_required=not loosely, check_exist=not loosely))
         # check outputs
-        self.params.update(**validate_parameters(params, self.outputs, subst, defaults=self.defaults, 
-                                                check_unknowns=False, check_required=False, check_exist=False))
+        params.update(**validate_parameters(params, self.outputs, subst, defaults=self.defaults, 
+                                                check_unknowns=False, check_required=False, check_exist=False, expand_globs=False))
+        self.params.update(**params)
         return self.params
 
     def validate_outputs(self, params: Dict[str, Any], subst: Optional[Dict[str, Any]], loosely=False):
@@ -208,8 +210,9 @@ class Cargo(object):
     def make_substitition_namespace(self):
         ns = {name: str(value) for name, value in self.params.items()}
         ns.update(**{name: "MISSING" for name in self.missing_params})
-        return OmegaConf.create(ns)
+        return SubstitutionNamespace(**ns)
 
+ParameterPassingMechanism = Enum("scabha.ParameterPassingMechanism", "args yaml")
 
 @dataclass 
 class Cab(Cargo):
@@ -234,6 +237,9 @@ class Cab(Cargo):
     # if set, activates this virtual environment first before running the command (not much sense doing this inside the container)
     virtual_env: Optional[str] = None
 
+    # controls how params are passed. args: via command line argument, yml: via a single yml string
+    parameter_passing: ParameterPassingMechanism = ParameterPassingMechanism.args
+
     # # not sure why this is here, let's retire (recipe defines "dirs")
     # msdir: Optional[bool] = False
     # cab management and cleanup definitions
@@ -242,6 +248,7 @@ class Cab(Cargo):
     # default parameter conversion policies
     policies: ParameterPolicies = ParameterPolicies()
 
+    # copy names of logging levels into wrangler actions
     wrangler_actions =  {attr: value for attr, value in logging.__dict__.items() if attr.upper() == attr and type(value) is int}
 
     # then add litetal constants for other wrangler actions
@@ -279,8 +286,7 @@ class Cab(Cargo):
         self._runtime_status = None
 
 
-    @property
-    def summary(self):
+    def summary(self, recursive=True):
         lines = [f"cab {self.name}:"] 
         for name, value in self.params.items():
             # if type(value) is validate.Error:
@@ -293,7 +299,7 @@ class Cab(Cargo):
 
 
     def build_command_line(self, subst=None):
-        subst = subst or OmegaConf.create()
+        subst = SubstitutionNamespace(**(subst or {}))
         subst.self = self.make_substitition_namespace()
 
         if self.virtual_env:
@@ -313,7 +319,7 @@ class Cab(Cargo):
             if command is None:
                 raise CabValidationError(f"{command0}: not found", log=self.log)
         else:
-            if not os.path.isfile(command) and os.stat(command).st_mode & stat.S_IXUSR:
+            if not os.path.isfile(command) or not os.stat(command).st_mode & stat.S_IXUSR:
                 raise CabValidationError(f"{command} doesn't exist or is not executable", log=self.log)
 
         self.log.debug(f"command is {command}")
@@ -340,6 +346,9 @@ class Cab(Cargo):
         # collect parameters
 
         value_dict = dict(**self.params)
+
+        if self.parameter_passing is ParameterPassingMechanism.yaml:
+            return [yaml.dump(value_dict)]
 
         def get_policy(schema, policy):
             if schema.policies[policy] is not None:

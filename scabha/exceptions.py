@@ -31,3 +31,6 @@ class CabValidationError(ScabhaBaseException):
 
 class ParameterValidationError(ScabhaBaseException):
     pass
+
+class SubstitutionError(ScabhaBaseException):
+    pass
