@@ -1,4 +1,4 @@
-import os.path, re, stat, itertools, logging, yaml
+import os.path, re, stat, itertools, logging, yaml, shlex
 from typing import Any, List, Dict, Optional, Union
 from enum import Enum
 from dataclasses import dataclass, field
@@ -310,7 +310,9 @@ class Cab(Cargo):
         else:
             venv = None
 
-        command = os.path.expanduser(self.command).format(**subst)
+        command_line = shlex.split(os.path.expanduser(self.command).format(**subst))
+        command = command_line[0]
+        args = command_line[1:]
         # collect command
         if "/" not in command:
             from scabha.proc_utils import which
@@ -324,7 +326,7 @@ class Cab(Cargo):
 
         self.log.debug(f"command is {command}")
 
-        return ([command] + self.build_argument_list()), venv
+        return ([command] + args + self.build_argument_list()), venv
 
 
     def build_argument_list(self):
