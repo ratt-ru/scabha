@@ -1,7 +1,7 @@
 from collections import OrderedDict
 import re
 import dataclasses
-import os.path, glob, yaml
+import os, os.path, glob, yaml
 
 from omegaconf import OmegaConf, ListConfig, DictConfig, MISSING
 from omegaconf.errors import ConfigAttributeError
@@ -85,6 +85,7 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
                         check_required=True,
                         check_exist=True,
                         expand_globs=True,
+                        create_dirs=False
                         ) -> Dict[str, Any]:
     """Validates a dict of parameter values against a given schema 
 
@@ -239,6 +240,10 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
                         if not os.path.isdir(files[0]):
                             raise ParameterValidationError(f"'{name}': '{value}' is not a directory")
                 inputs[name] = files[0]
+                if create_dirs:
+                    dirname = os.path.dirname(files[0])
+                    if dirname:
+                        os.makedirs(dirname, exist_ok=True)
             # else make list
             else:
                 if check_exist:
@@ -249,6 +254,11 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
                         if check_exist and not all(os.path.isdir(f) for f in files):
                             raise ParameterValidationError(f"{name}: '{value}' matches non-directories")
                 inputs[name] = files
+                if create_dirs:
+                    for path in files:
+                        dirname = os.path.dirname(path)
+                        if dirname:
+                            os.makedirs(dirname, exist_ok=True)
 
     # validate
     try:   
@@ -265,11 +275,15 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
         if schema.choices and value not in schema.choices:
             raise ParameterValidationError(f"{name}: invalid value '{value}'")
 
+    # check for mkdir directives
+    if create_dirs:
+        for name, value in validated.items():
+            if schemas[name].mkdir:
+                dirname = os.path.dirname(value)
+                if dirname:
+                    os.makedirs(dirname, exist_ok=True)
 
     # add in unresolved values
     validated.update(**unresolved)
-
-    ## TODO: check "choices" field
-
 
     return validated

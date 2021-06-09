@@ -97,6 +97,9 @@ class Parameter(object):
     # list of aliases for this parameter (i.e. references to other parameters whose schemas/values this parameter shares)
     aliases: Optional[List[str]] = ()
 
+    # if true, treat parameter as a path, and ensure that the parent directories it refers to exist
+    mkdir: bool = False
+
     # if command-line option for underlying binary has a different name, specify it here
     nom_de_guerre: Optional[str] = None
 
@@ -184,10 +187,10 @@ class Cargo(object):
         self._add_implicits(params, self.inputs)
         # check inputs
         params.update(**validate_parameters(params, self.inputs, subst, defaults=self.defaults, 
-                                                check_unknowns=False, check_required=not loosely, check_exist=not loosely))
+                                                check_unknowns=False, check_required=not loosely, check_exist=not loosely, create_dirs=True))
         # check outputs
         params.update(**validate_parameters(params, self.outputs, subst, defaults=self.defaults, 
-                                                check_unknowns=False, check_required=False, check_exist=False, expand_globs=False))
+                                                check_unknowns=False, check_required=False, check_exist=False, create_dirs=True, expand_globs=False))
         self.params.update(**params)
         return self.params
 
