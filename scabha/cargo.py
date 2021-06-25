@@ -364,7 +364,7 @@ class Cab(Cargo):
         def stringify_argument(name, value, schema, option=None):
             if value is None:
                 return None
-            if schema.dtype == "bool" and not value:
+            if schema.dtype == "bool" and not value and not schema.required:
                 return None
 
             is_list = hasattr(value, '__iter__') and type(value) is not str
