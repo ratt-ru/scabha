@@ -23,16 +23,16 @@ def test_subst():
 
     ns.bar.a = 1
     ns.bar.b = "{foo.b}"
-    ns.bar.c = "{foo.x} deliveberately unresolved"
+    ns.bar.c = "{foo.x} deliberately unresolved"
 
-    updated, unresolved, forgivens = self_substitute(ns, printfunc=print)
+    ns1, unresolved, forgivens = self_substitute(ns, debugprint=print)
 
     print(f"forgivens are: {forgivens}")
 
-    assert updated is True
+    assert ns is not ns1 
     assert unresolved == 1
     assert len(forgivens) == 1
-    assert ns.bar._has_error_('c')
+    assert isinstance(ns1.bar.c, Exception)
 
 if __name__ == "__main__":
     test_subst()

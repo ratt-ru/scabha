@@ -45,27 +45,52 @@ def multireplace(string, replacements, ignore_case=False):
     # For each match, look up the new string in the replacements, being the key the normalized old string
     return pattern.sub(lambda match: replacements[normalize_old(match.group(0))], string)
 
+
 class SubstitutionNamespace(OrderedDict):
+    """Implements a namespace that can do {}-substitutions on itself
+    """
     @dataclass
     class Properties(object):
-        mutable: bool = False
+        mutable: bool = True
         forgiving: bool = False
         updated: bool = False
-        error: Optional[Exception] = None
 
     _default_prop_ = Properties()
 
     def __init__(self, **kw):
+        """Initializes the namespace. Keywords are _add_'ed as items in the namespace
+        """
         super().__setattr__('_props_', SubstitutionNamespace.Properties())
         super().__setattr__('_child_props_', {})
         super().__setattr__('_forgave_', set())
         SubstitutionNamespace._update_(self, **kw)
 
+    def copy(self):
+        newcopy = SubstitutionNamespace()
+        OrderedDict.__setattr__(newcopy, '_props_', self._props_)
+        OrderedDict.__setattr__(newcopy, '_child_props_', self._child_props_.copy())
+        OrderedDict.__setattr__(newcopy, '_forgave_', self._forgave_.copy())
+        for key, value in self.items():
+            OrderedDict.__setitem__(newcopy, key, value)
+        return newcopy
+
     def _update_(self, **kw):
+        """Updates items in the namespace using _add_()
+        """
         for name, value in kw.items():
             SubstitutionNamespace._add_(self, name, value)
 
     def _add_(self, k: str, v: Any, forgiving=False, mutable=True):
+        """Adds an item to the namespace.
+
+        Args:
+            k (str): item key
+            v (Any): item value. A dict or OrderedDict value becomes a SubstitutionNamespace automatically
+            forgiving (bool, optional): If True, sub-namespace is "forgiving" with references to missing items,
+                returning "(name)" for ns.name if name is missing. If False, such references result in an AttributeError.
+                Default is False.
+            mutable (bool, optional): If False, sub-namespace is immutable and not will not have substitutions done inside it. Defaults to True.
+        """
         props = SubstitutionNamespace.Properties(mutable=mutable, forgiving=forgiving)
         if type(v) in (dict, OrderedDict):
             v = SubstitutionNamespace(**v)
@@ -73,26 +98,6 @@ class SubstitutionNamespace(OrderedDict):
             OrderedDict.__setattr__(v, '_props_', props)
         self._child_props_[k] = props
         super().__setitem__(k, v)
-
-    def _is_updated_(self, name):
-        return name in self._child_props_ and self._child_props_[name].updated
-
-    def _has_error_(self, name):
-        return self._child_props_[name].error if name in self._child_props_ else None
-
-    def _has_forgiven_(self, name):
-        return self._forgave_
-
-    def _clear_updated_(self):
-        self._props_.updated = False
-        self._props_.error = None
-        self._forgave_.clear()
-        for name, child in super().items():
-            props = self._child_props_[name]
-            props.updated = False
-            props.error = None
-            if isinstance(child, SubstitutionNamespace) and props.mutable:
-                child._clear_updated_()
 
     def __setattr__(self, name: str, value: Any) -> None:
         SubstitutionNamespace._add_(self, name, value)
@@ -110,33 +115,53 @@ class SubstitutionNamespace(OrderedDict):
             raise AttributeError(name)
 
     def _substitute_(self, subst: Optional['SubstitutionNamespace'] = None):
-        updated = 0
-        unresolved = 0
-        subst = subst or self
+        """Recursively substitutes {}-strings within this namespace
+
+        Args:
+            subst (SubstitutionNamespace, optional): Namespace used to look up substitutions. Defaults to self.
+
+        Returns:
+            SubstitutionNamespace, updated, unresolved: output namespace (same as self if copy=False), count of updates, count of unresolved substitutions
+        """
+        updated = unresolved = 0
+        output = self
         # loop over parameters and find ones to substitute
         for name, value in super().items():
             props = self._child_props_[name]
+            updated1 = unresolved1 = 0
+            # substitute strings
             if isinstance(value, str) and not isinstance(value, Error) and "{" in value:
                 # format string value
                 try:
                     # protect "{{" and "}}" from getting converted to a single brace by pre-replacing them
                     newvalue = multireplace(value, {'{{': '\u00AB', '}}': '\u00BB'})
-                    newvalue = newvalue.format(**subst)
+                    newvalue = newvalue.format(**(subst or output))
                     newvalue = multireplace(newvalue, {'\u00AB': '{{', '\u00BB': '}}'})
+                    updated1 = int(value != newvalue)
                 except Exception as exc:
-                    props.error = exc
-                    unresolved += 1
-                    continue
-                if value != newvalue:
-                    super().__setitem__(name, newvalue)
-                    props.updated = True
-                    updated += 1
+                    newvalue = exc
+                    unresolved1 = updated1 = 1
+            # else substitute into mutable sub-namespaces
             elif isinstance(value, SubstitutionNamespace) and props.mutable:
-                updated1, unresolved1 = value._substitute_(subst)
-                updated += updated1
-                unresolved += unresolved1
+                newvalue, updated1, unresolved1 = value._substitute_(subst or output)
+            elif isinstance(value, Exception):
+                unresolved1 = 1
+            # has something changed? make copy of ourselves if so
+            if updated1:
+                if output is self:
+                    output = self.copy()
+                OrderedDict.__setitem__(output, name, newvalue)
+            # update counters
+            updated += updated1
+            unresolved += unresolved1
 
-        return updated, unresolved
+        return output, updated, unresolved
+
+    def _clear_forgivens_(self):
+        self._forgave_ = set()
+        for child in self.values():
+            if isinstance(child, SubstitutionNamespace):
+                child._clear_forgivens_()
 
     def _collect_forgivens_(self, name: Optional[str] = None):
         own_name = name or "."
@@ -147,58 +172,74 @@ class SubstitutionNamespace(OrderedDict):
         return result
 
     def _finalize_braces_(self):
-        updated = False
+        output = self
         for name, value in self.items():
             props = self._child_props_[name]
+            updated = False
             if isinstance(value, SubstitutionNamespace) and props.mutable:
-                if value._finalize_braces_():
-                    updated = props.updated = True
-            elif isinstance(value, str) and props.error is None:
-                newvalue = value.format()
-                if newvalue != value:
-                    super().__setitem__(name, newvalue)
-                    updated = props.updated = True
-        return True
+                newvalue = value._finalize_braces_()
+                updated = newvalue is not value
+            elif isinstance(value, str):
+                newvalue = value.format()  # this converts {{ and }} to { and }
+                updated = newvalue != value
+            if updated:
+                if output is self:
+                    output = self.copy()
+                OrderedDict.__setitem__(output, name, newvalue)
+        return output
 
     def _print_(self, prefix="", printfunc=print):
         for name, value in self.items():
+            if name.startswith("_") or name.endswith("_"):
+                continue
             if isinstance(value, SubstitutionNamespace):
                 printfunc(f"{prefix}{name}:")
                 value._print_(prefix + "  ")
+            elif isinstance(value, Exception):
+                printfunc(f"{prefix}{name}: ERR: {value}")
             else:
                 printfunc(f"{prefix}{name}: {value}")
 
-def self_substitute(ns: SubstitutionNamespace, name: Optional[str] = None, printfunc = None):
-    # recursively clear the updated property
-    ns._clear_updated_()
-    any_updated = False
 
-    printfunc and printfunc("--- before substitution ---")
-    printfunc and ns._print_(printfunc=printfunc, prefix="  ")
+def self_substitute(ns: SubstitutionNamespace, name: Optional[str] = None, debugprint = None):
+    """Resolves {}-substitutions within a namespace.
+
+    Args:
+        ns (SubstitutionNamespace): namespace to do substitutions in.
+        name (Optional[str], optional): name of this namespace, used in messages.
+        debugprint (callable, optional): if set, function used to print debug messages.
+
+    Raises:
+        SubstitutionError: [description]
+
+    Returns:
+        SubstitutionNamespace: copy of namespace with substitutions in it. Will be the same as ns if no substitutions done
+    """
+    ns._clear_forgivens_()
+
+    debugprint and debugprint("--- before substitution ---")
+    debugprint and ns._print_(printfunc=debugprint, prefix="  ")
 
     # repeat as long as values keep changing, but qut after 10 cycles in case of infinite cross-refs
     for i in range(10):
-        updated, unresolved = ns._substitute_()
-        printfunc and printfunc(f"--- iteration {i} updated {updated} unresolved {unresolved} ---")
-        if updated:
-            any_updated = True
-        else:
+        ns, updated, unresolved = ns._substitute_()
+        debugprint and debugprint(f"--- iteration {i} updated {updated} unresolved {unresolved} ---")
+        if not updated:
             break 
-        printfunc and ns._print_(printfunc=printfunc, prefix="  ")
+        debugprint and ns._print_(printfunc=debugprint, prefix="  ")
     else:
         raise SubstitutionError("recursion limit exceeded while evaluating {}-substitutions. This is usally caused by cyclic (cross-)substitutions.")
 
     # clear up "{{"s
-    printfunc and printfunc(f"--- finalizing curly braces ---")
-    if ns._finalize_braces_():
-        any_updated = True
-    printfunc and ns._print_(printfunc=printfunc, prefix="  ")
+    debugprint and debugprint(f"--- finalizing curly braces ---")
+    ns = ns._finalize_braces_()
+    debugprint and ns._print_(printfunc=debugprint, prefix="  ")
 
-    return any_updated, unresolved, ns._collect_forgivens_(name)
+    return ns, unresolved, ns._collect_forgivens_(name)
 
 
-def copy_updates(src: SubstitutionNamespace, dest: Dict[str, Any]):
-    for name, value in src.items():
-        props = src._child_props_[name]
-        if props.updated:
-            dest[name] = value
+# def copy_updates(src: SubstitutionNamespace, dest: Dict[str, Any]):
+#     for name, value in src.items():
+#         props = src._child_props_[name]
+#         if props.updated:
+#             dest[name] = value

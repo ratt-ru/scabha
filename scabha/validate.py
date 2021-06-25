@@ -203,6 +203,9 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
         is_file = dtype in (File, Directory, MS)
         is_file_list = dtype in (List[File], List[Directory], List[MS])
 
+        # must this file exist? Schema may force this check, otherwise follow the default check_exist policy
+        must_exist = check_exist if schema.must_exist is None else schema.must_exist
+
         if is_file or is_file_list:
             # match to existing file(s)
             if type(value) is str:
@@ -222,23 +225,30 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
                 raise ParameterValidationError(f"'{name}': invalid type '{type(value)}'")
 
             if not files:
-                if schema.required and check_exist:
-                    raise ParameterValidationError(f"'{name}': no files found for '{value}'")
+                if must_exist:
+                    raise ParameterValidationError(f"'{name}={value}' does not specify any file(s)")
                 else:
                     inputs[name] = [] if is_file_list else ""
                     continue
 
+            # check for existence
+            if must_exist: 
+                not_exists = [f for f in files if not os.path.exists(f)]
+                if not_exists:
+                    raise ParameterValidationError(f"'{name}': {','.join(not_exists)} doesn't exist")
+
             # check for single file/dir
             if dtype in (File, Directory, MS):
                 if len(files) > 1:
-                    raise ParameterValidationError(f"'{name}': multiple files given ('{value}')")
-                if check_exist:
+                    raise ParameterValidationError(f"'{name}': multiple files given ({value})")
+                # check that files are files and dirs are dirs
+                if os.path.exists(files[0]):
                     if dtype is File:
                         if not os.path.isfile(files[0]):
-                            raise ParameterValidationError(f"'{name}': '{value}' is not a regular file")
+                            raise ParameterValidationError(f"'{name}': {value} is not a regular file")
                     else:
                         if not os.path.isdir(files[0]):
-                            raise ParameterValidationError(f"'{name}': '{value}' is not a directory")
+                            raise ParameterValidationError(f"'{name}': {value} is not a directory")
                 inputs[name] = files[0]
                 if create_dirs:
                     dirname = os.path.dirname(files[0])
@@ -246,13 +256,13 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
                         os.makedirs(dirname, exist_ok=True)
             # else make list
             else:
-                if check_exist:
-                    if dtype is List[File]:
-                        if check_exist and not all(os.path.isfile(f) for f in files):
-                            raise ParameterValidationError(f"{name}: '{value}' matches non-files")
-                    else:
-                        if check_exist and not all(os.path.isdir(f) for f in files):
-                            raise ParameterValidationError(f"{name}: '{value}' matches non-directories")
+                # check that files are files and dirs are dirs
+                if dtype is List[File]:
+                    if not all(os.path.isfile(f) for f in files if os.path.exists(f)):
+                        raise ParameterValidationError(f"{name}: {value} matches non-files")
+                else:
+                    if not all(os.path.isdir(f) for f in files if os.path.exists(f)):
+                        raise ParameterValidationError(f"{name}: {value} matches non-directories")
                 inputs[name] = files
                 if create_dirs:
                     for path in files:
