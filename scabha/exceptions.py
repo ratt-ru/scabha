@@ -1,6 +1,6 @@
+from typing import List
 
 logger = None
-
 
 def set_logger(log):
     global logger
@@ -34,3 +34,9 @@ class ParameterValidationError(ScabhaBaseException):
 
 class SubstitutionError(ScabhaBaseException):
     pass
+
+class CyclicSubstitutionError(SubstitutionError):
+    def __init__(self, location: List[str], other_location: List[str]):
+        self.location = ".".join(location)
+        self.other_location = ".".join(other_location)
+        super().__init__(f"'{{{self.location}}}' is a cyclic substition")

@@ -5,19 +5,19 @@ from dataclasses import dataclass, field
 from omegaconf import MISSING, OmegaConf, ListConfig, DictConfig
 from collections import OrderedDict
 
-from .exceptions import CabValidationError, ParameterValidationError, DefinitionError, SchemaError
-from . import validate
-from .validate import validate_parameters, SubstitutionNamespace
-import scabha
-
-## almost supported by omegaconf, see https://github.com/omry/omegaconf/issues/144, for now just use Any
-ListOrString = Any   
-
 def EmptyDictDefault():
     return field(default_factory=lambda:OrderedDict())
 
 def EmptyListDefault():
     return field(default_factory=lambda:[])
+
+from .exceptions import CabValidationError, ParameterValidationError, DefinitionError, SchemaError
+from . import validate
+from .validate import validate_parameters
+import scabha
+
+## almost supported by omegaconf, see https://github.com/omry/omegaconf/issues/144, for now just use Any
+ListOrString = Any   
 
 
 Conditional = Optional[str]
@@ -159,7 +159,7 @@ class Cargo(object):
     def finalized(self):
         return self.log is not None
 
-    def finalize(self, config=None, log=None, hier_name=None, nesting=0):
+    def finalize(self, config=None, log=None, fqname=None, nesting=0):
         if not self.finalized:
             self.config = config
             self.log = log or scabha.logger()
@@ -181,8 +181,8 @@ class Cargo(object):
                    raise SchemaError(f"implicit parameter {name} also has a default value")
                 params[name] = schema.implicit
 
-    def validate_inputs(self, params: Dict[str, Any], subst: Optional[Dict[str, Any]], loosely=False):
-        """Validates inputs. Parameter substitution is done. 
+    def validate_inputs(self, params: Dict[str, Any], loosely=False):
+        """Validates inputs.  
         If loosely is True, then doesn't check for required parameters, and doesn't check for files to exist etc.
         """
         assert(self.finalized)
@@ -190,22 +190,22 @@ class Cargo(object):
         params = params.copy()
         self._add_implicits(params, self.inputs)
         # check inputs
-        params.update(**validate_parameters(params, self.inputs, subst, defaults=self.defaults, 
+        params.update(**validate_parameters(params, self.inputs, defaults=self.defaults, 
                                                 check_unknowns=False, check_required=not loosely, check_exist=not loosely, create_dirs=True))
         # check outputs
-        params.update(**validate_parameters(params, self.outputs, subst, defaults=self.defaults, 
+        params.update(**validate_parameters(params, self.outputs, defaults=self.defaults, 
                                                 check_unknowns=False, check_required=False, check_exist=False, create_dirs=True, expand_globs=False))
         self.params.update(**params)
         return self.params
 
-    def validate_outputs(self, params: Dict[str, Any], subst: Optional[Dict[str, Any]], loosely=False):
+    def validate_outputs(self, params: Dict[str, Any], loosely=False):
         """Validates outputs. Parameter substitution is done. 
         If loosely is True, then doesn't check for required parameters, and doesn't check for files to exist etc.
         """
         assert(self.finalized)
         # add implicit outputs
         self._add_implicits(params, self.outputs)
-        self.params.update(**validate_parameters(params, self.outputs, subst, defaults=self.defaults, 
+        self.params.update(**validate_parameters(params, self.outputs, defaults=self.defaults, 
                                                 check_unknowns=False, check_required=not loosely, check_exist=not loosely))
         return self.params
 
@@ -214,10 +214,12 @@ class Cargo(object):
         assert(self.finalized)
         self.params[name] = value
 
-    def make_substitition_namespace(self):
-        ns = {name: str(value) for name, value in self.params.items()}
+    def make_substitition_namespace(self, ns=None):
+        from .substitutions import SubstitutionNS
+        ns = {} if ns is None else ns.copy()
+        ns.update(**{name: str(value) for name, value in self.params.items()})
         ns.update(**{name: "MISSING" for name in self.missing_params})
-        return SubstitutionNamespace(**ns)
+        return SubstitutionNS(**ns)
 
 ParameterPassingMechanism = Enum("scabha.ParameterPassingMechanism", "args yaml")
 
@@ -305,19 +307,22 @@ class Cab(Cargo):
         return lines
 
 
-    def build_command_line(self, subst=None):
-        subst = SubstitutionNamespace(**(subst or {}))
-        subst.self = self.make_substitition_namespace()
+    def build_command_line(self, subst: Optional[Dict[str, Any]] = None):
+        from .substitutions import substitutions_from
 
-        if self.virtual_env:
-            venv = os.path.expanduser(self.virtual_env).format(**subst)
+        with substitutions_from(subst, raise_errors=True) as context:
+            venv = context.evaluate(self.virtual_env, location=["virtual_env"])
+            command = context.evaluate(self.command, location=["command"])
+
+        if venv:
+            venv = os.path.expanduser(venv)
             if not os.path.isfile(f"{venv}/bin/activate"):
                 raise CabValidationError(f"virtual environment {venv} doesn't exist", log=self.log)
             self.log.debug(f"virtual envirobment is {venv}")
         else:
             venv = None
 
-        command_line = shlex.split(os.path.expanduser(self.command).format(**subst))
+        command_line = shlex.split(os.path.expanduser(command))
         command = command_line[0]
         args = command_line[1:]
         # collect command

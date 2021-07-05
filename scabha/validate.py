@@ -48,38 +48,8 @@ def validate_schema(schema: Dict[str, Any]):
     pass
 
 
-class SubstitutionNamespace(dict):
-    def __init__(self, **kw):
-        super().__setattr__('_forgiving_', False)
-        SubstitutionNamespace._update_(self, **kw)
-
-    def _update_(self, **kw):
-        for name, value in kw.items():
-            SubstitutionNamespace._add_(self, name, value)
-
-    def _add_(self, k: str, v: Any, forgiving=False):
-        if type(v) in (dict, OrderedDict):
-            v = SubstitutionNamespace(**v)
-            v._forgiving_ = forgiving
-        super().__setitem__(k, v)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        SubstitutionNamespace._add_(self, name, value)
-
-    def __setitem__(self, k: str, v: Any) -> None:
-        SubstitutionNamespace._add_(self, k, v)
-
-    def __getattr__(self, name: str) -> Any:
-        if name in self:
-            return super().get(name)
-        elif self._forgiving_:
-            return f"{name}"
-        else:
-            raise AttributeError(name)
-
 
 def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any], 
-                        subst: Optional[Dict[str, Any]] = None,
                         defaults: Optional[Dict[str, Any]] = None,
                         check_unknowns=True,    
                         check_required=True,
@@ -92,8 +62,6 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
     Args:
         params (Dict[str, Any]):   map of input parameter values
         schema (Dict[str, Any]):   map of parameter names to schemas. Each schema must contain a dtype field and a choices field.
-        subst  (Dict[str, Any], optional): dictionary of substitutions to be made in str-valued parameters (using .format(**subst))
-                                 if missing, str-valued parameters with {} in them will be marked as Unresolved.
         defaults (Dict[str, Any], optional): dictionary of default values to be used when a value is missing
 
     Raises:
@@ -125,41 +93,6 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
                 inputs[name] = defaults[name]
             elif schema.default is not None:
                 inputs[name] = schema.default
-
-
-    # do substitutions if asked to
-    # since substitutions can potentially reference each other, repeat this until things sette
-    if subst is not None:
-        # substitution namespace is input dict plus current parameter values
-        subst1 = SubstitutionNamespace(**subst)
-        subst1_self = subst1['self'] = SubstitutionNamespace(**inputs)
-        for i in range(10):
-            changed = False
-            # loop over parameters and find ones to substitute
-            for name, value in inputs.items():
-                if isinstance(value, str) and not isinstance(value, Error):
-                    try:
-                        newvalue = value.format(**subst1)
-                        subst1_self[name] = str(newvalue)
-                    except ConfigAttributeError as exc:
-                        newvalue = Error(f"ERR ({exc.key})")
-                        subst1_self[name] = f"ERR ({exc.key})"
-                    except Exception as exc:
-                        newvalue = Error(f"{exc}")
-                        subst1_self[name] = "ERR"
-                    if newvalue != value:
-                        inputs[name] = newvalue
-                        changed = True
-            if not changed:
-                break 
-        else:
-            raise ParameterValidationError("recursion limit exceeded while evaluating {}-substitutions. This is usally caused by cyclic (cross-)references.")
-    # else check for substitutions and move them to the unresolved dict
-    else:
-        for name, value in list(inputs.items()):
-            if isinstance(value, str) and not isinstance(value, Error) and re.search("{[^{]", value):
-                unresolved[name] = Unresolved(value)
-                del inputs[name]
 
     # check that required args are present
     if check_required:

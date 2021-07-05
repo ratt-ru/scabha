@@ -1,11 +1,13 @@
-import re
+import re, string
 from collections import OrderedDict
+from scabha.cargo import EmptyDictDefault, EmptyListDefault
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Optional, Union, FrozenSet, List
+import threading
 
 from .validate import Error
-from .exceptions import SubstitutionError
-
+from .exceptions import SubstitutionError, CyclicSubstitutionError
 
 # thanks to https://gist.github.com/bgusach/a967e0587d6e01e889fd1d776c5f3729
 def multireplace(string, replacements, ignore_case=False):
@@ -22,177 +24,149 @@ def multireplace(string, replacements, ignore_case=False):
     if ignore_case:
         def normalize_old(s):
             return s.lower()
-
         re_mode = re.IGNORECASE
 
     else:
         def normalize_old(s):
             return s
-
         re_mode = 0
 
     replacements = {normalize_old(key): val for key, val in replacements.items()}
-    
+
     # Place longer ones first to keep shorter substrings from matching where the longer ones should take place
     # For instance given the replacements {'ab': 'AB', 'abc': 'ABC'} against the string 'hey abc', it should produce
     # 'hey ABC' and not 'hey ABc'
     rep_sorted = sorted(replacements, key=len, reverse=True)
     rep_escaped = map(re.escape, rep_sorted)
-    
+
     # Create a big OR regex that matches any of the substrings to replace
     pattern = re.compile("|".join(rep_escaped), re_mode)
-    
+
     # For each match, look up the new string in the replacements, being the key the normalized old string
-    return pattern.sub(lambda match: replacements[normalize_old(match.group(0))], string)
+    return pattern.sub(
+        lambda match: replacements[normalize_old(match.group(0))], string
+    )
 
 
-class SubstitutionNamespace(OrderedDict):
-    """Implements a namespace that can do {}-substitutions on itself
-    """
-    @dataclass
-    class Properties(object):
-        mutable: bool = True
-        forgiving: bool = False
-        updated: bool = False
+class SubstitutionNS(OrderedDict):
+    """Implements a namespace for {}-substitutions"""
 
-    _default_prop_ = Properties()
+    class StringWrapper(object):
+        """Helper class used in forgiving substitutions: returns itself for all attribute access.
+
+        This allows substitutions like "{x.y.z} xxx" to fail gracefully if "x" is missing. When the string formater
+        looks up "x", it gets back a wrapper, in which it proceeds to look up "y" and "z", eventually evaluating to
+        the given value that the wrapper was constructed with.
+        """
+        def __init__(self,  value):
+            self.value = str(value)
+        
+        def __getitem__(self, key):
+            return self
+
+        def __getattr__(self, key):
+            return self
+
+        def __str__(self):
+            return getattr(self, 'value')
 
     def __init__(self, **kw):
-        """Initializes the namespace. Keywords are _add_'ed as items in the namespace
-        """
-        super().__setattr__('_props_', SubstitutionNamespace.Properties())
-        super().__setattr__('_child_props_', {})
-        super().__setattr__('_forgave_', set())
-        SubstitutionNamespace._update_(self, **kw)
+        """Initializes the namespace. Keywords are _add_'ed as items in the namespace"""
+        name = kw.pop("_name_", [])
+        nosubst = kw.pop("_nosubst_", False)
+        super().__setattr__("_name_", name)
+        super().__setattr__("_nosubst_", nosubst)
+        SubstitutionNS._update_(self, **kw)
 
     def copy(self):
-        newcopy = SubstitutionNamespace()
-        OrderedDict.__setattr__(newcopy, '_props_', self._props_)
-        OrderedDict.__setattr__(newcopy, '_child_props_', self._child_props_.copy())
-        OrderedDict.__setattr__(newcopy, '_forgave_', self._forgave_.copy())
+        newcopy = SubstitutionNS()
+        OrderedDict.__setattr__(newcopy, "_name_", self._name_)
+        OrderedDict.__setattr__(newcopy, "_nosubst_", set())
         for key, value in self.items():
             OrderedDict.__setitem__(newcopy, key, value)
         return newcopy
 
     def _update_(self, **kw):
-        """Updates items in the namespace using _add_()
-        """
+        """Updates items in the namespace using _add_()"""
         for name, value in kw.items():
-            SubstitutionNamespace._add_(self, name, value)
+            SubstitutionNS._add_(self, name, value)
 
-    def _add_(self, k: str, v: Any, forgiving=False, mutable=True):
+    def _merge_(self, ns):
+        """Recursively merges in one namespace into another"""
+        for name, value in ns.items():
+            if name not in self:
+                SubstitutionNS._add_(self, name, value)
+            else:
+                old_value = super().get(name)
+                if isinstance(old_value, SubstitutionNS) and \
+                    isinstance(value, (dict, OrderedDict, SubstitutionNS)):
+                    old_value._merge_(**value)
+                else:
+                    SubstitutionNS._add_(self, name, value)
+
+    def _add_(self, name: str, value: Any, nosubst=False):
         """Adds an item to the namespace.
 
         Args:
-            k (str): item key
-            v (Any): item value. A dict or OrderedDict value becomes a SubstitutionNamespace automatically
-            forgiving (bool, optional): If True, sub-namespace is "forgiving" with references to missing items,
-                returning "(name)" for ns.name if name is missing. If False, such references result in an AttributeError.
-                Default is False.
-            mutable (bool, optional): If False, sub-namespace is immutable and not will not have substitutions done inside it. Defaults to True.
+            name (str): item key
+            value (Any): item value. A dict or OrderedDict value becomes a SubstitutionNS automatically, with nosubst property
+            nosubst (bool): use this as the nosubst property of the sub-namespace
         """
-        props = SubstitutionNamespace.Properties(mutable=mutable, forgiving=forgiving)
-        if type(v) in (dict, OrderedDict):
-            v = SubstitutionNamespace(**v)
-        if isinstance(v, SubstitutionNamespace):
-            OrderedDict.__setattr__(v, '_props_', props)
-        self._child_props_[k] = props
-        super().__setitem__(k, v)
+        if type(value) in (dict, OrderedDict):
+            value = SubstitutionNS(_nosubst_=nosubst or self._nosubst_, _name_=self._name_ + [name], **value)
+        # if isinstance(value, SubstitutionNS):
+        #     OrderedDict.__setattr__(v, "_props_", props)
+        super().__setitem__(name, value)
 
     def __setattr__(self, name: str, value: Any) -> None:
-        SubstitutionNamespace._add_(self, name, value)
+        SubstitutionNS._add_(self, name, value)
 
     def __setitem__(self, k: str, v: Any) -> None:
-        SubstitutionNamespace._add_(self, k, v)
+        SubstitutionNS._add_(self, k, v)
 
-    def __getattr__(self, name: str) -> Any:
-        if name in self:
-            return super().get(name)
-        elif self._props_.forgiving:
-            self._forgave_.add(name)
-            return f"({name})"
-        else:
-            raise AttributeError(name)
+    def get(self, name, default=None):
+        context = SubstitutionContext.current()
+        # keep track of nested lookups, if doing substitutions
+        nestloc = context.nested_location if context else None
+        value = None # set to None, in case exception handler is invoked before value is set
+        try:
+            if nestloc is not None:
+                nestloc.append(name)
+                # see if this location is already being substituted -- this is a cyclic substitution
+                for otherloc, otherfrom in context.loc_stack[:-1]:
+                    if otherloc == nestloc:
+                        raise CyclicSubstitutionError(context.loc_stack[-1][1], otherfrom)
+            if name in self:
+                value = super().get(name)
+                if context and not self._nosubst_:
+                    value = context.evaluate(value, location=nestloc)
+                return value
+            elif default in (KeyError, AttributeError):
+                raise default(name)
+            else:
+                return default
+        # catch errors
+        except Exception as exc:
+            if context is not None:
+                forgive = context.forgive_errors.get(type(exc))
+                if type(forgive) is str:
+                    return SubstitutionNS.StringWrapper(forgive.format(name=''.join(nestloc or []), value=value, target=name, exc=exc))
+                elif forgive:
+                    return SubstitutionNS.StringWrapper(f"({type(exc).__name__}: {exc})")
+            # else re-raise exception
+            raise
 
-    def _substitute_(self, subst: Optional['SubstitutionNamespace'] = None):
-        """Recursively substitutes {}-strings within this namespace
+    def __getitem__(self, name):
+        return self.get(name, KeyError)
 
-        Args:
-            subst (SubstitutionNamespace, optional): Namespace used to look up substitutions. Defaults to self.
-
-        Returns:
-            SubstitutionNamespace, updated, unresolved: output namespace (same as self if copy=False), count of updates, count of unresolved substitutions
-        """
-        updated = unresolved = 0
-        output = self
-        # loop over parameters and find ones to substitute
-        for name, value in super().items():
-            props = self._child_props_[name]
-            updated1 = unresolved1 = 0
-            # substitute strings
-            if isinstance(value, str) and not isinstance(value, Error) and "{" in value:
-                # format string value
-                try:
-                    # protect "{{" and "}}" from getting converted to a single brace by pre-replacing them
-                    newvalue = multireplace(value, {'{{': '\u00AB', '}}': '\u00BB'})
-                    newvalue = newvalue.format(**(subst or output))
-                    newvalue = multireplace(newvalue, {'\u00AB': '{{', '\u00BB': '}}'})
-                    updated1 = int(value != newvalue)
-                except Exception as exc:
-                    newvalue = exc
-                    unresolved1 = updated1 = 1
-            # else substitute into mutable sub-namespaces
-            elif isinstance(value, SubstitutionNamespace) and props.mutable:
-                newvalue, updated1, unresolved1 = value._substitute_(subst or output)
-            elif isinstance(value, Exception):
-                unresolved1 = 1
-            # has something changed? make copy of ourselves if so
-            if updated1:
-                if output is self:
-                    output = self.copy()
-                OrderedDict.__setitem__(output, name, newvalue)
-            # update counters
-            updated += updated1
-            unresolved += unresolved1
-
-        return output, updated, unresolved
-
-    def _clear_forgivens_(self):
-        self._forgave_ = set()
-        for child in self.values():
-            if isinstance(child, SubstitutionNamespace):
-                child._clear_forgivens_()
-
-    def _collect_forgivens_(self, name: Optional[str] = None):
-        own_name = name or "."
-        result = [f"{own_name}.{key}" for key in self._forgave_]
-        for child_name, child in self.items():
-            if isinstance(child, SubstitutionNamespace):
-                result += child._collect_forgivens_(f"{name}.{child_name}" if name is not None else child_name)
-        return result
-
-    def _finalize_braces_(self):
-        output = self
-        for name, value in self.items():
-            props = self._child_props_[name]
-            updated = False
-            if isinstance(value, SubstitutionNamespace) and props.mutable:
-                newvalue = value._finalize_braces_()
-                updated = newvalue is not value
-            elif isinstance(value, str):
-                newvalue = value.format()  # this converts {{ and }} to { and }
-                updated = newvalue != value
-            if updated:
-                if output is self:
-                    output = self.copy()
-                OrderedDict.__setitem__(output, name, newvalue)
-        return output
+    def __getattr__(self, name):
+        return self.get(name, AttributeError)
 
     def _print_(self, prefix="", printfunc=print):
         for name, value in self.items():
             if name.startswith("_") or name.endswith("_"):
                 continue
-            if isinstance(value, SubstitutionNamespace):
+            if isinstance(value, SubstitutionNS):
                 printfunc(f"{prefix}{name}:")
                 value._print_(prefix + "  ")
             elif isinstance(value, Exception):
@@ -201,45 +175,132 @@ class SubstitutionNamespace(OrderedDict):
                 printfunc(f"{prefix}{name}: {value}")
 
 
-def self_substitute(ns: SubstitutionNamespace, name: Optional[str] = None, debugprint = None):
-    """Resolves {}-substitutions within a namespace.
-
-    Args:
-        ns (SubstitutionNamespace): namespace to do substitutions in.
-        name (Optional[str], optional): name of this namespace, used in messages.
-        debugprint (callable, optional): if set, function used to print debug messages.
-
-    Raises:
-        SubstitutionError: [description]
-
-    Returns:
-        SubstitutionNamespace: copy of namespace with substitutions in it. Will be the same as ns if no substitutions done
-    """
-    ns._clear_forgivens_()
-
-    debugprint and debugprint("--- before substitution ---")
-    debugprint and ns._print_(printfunc=debugprint, prefix="  ")
-
-    # repeat as long as values keep changing, but qut after 10 cycles in case of infinite cross-refs
-    for i in range(10):
-        ns, updated, unresolved = ns._substitute_()
-        debugprint and debugprint(f"--- iteration {i} updated {updated} unresolved {unresolved} ---")
-        if not updated:
-            break 
-        debugprint and ns._print_(printfunc=debugprint, prefix="  ")
-    else:
-        raise SubstitutionError("recursion limit exceeded while evaluating {}-substitutions. This is usally caused by cyclic (cross-)substitutions.")
-
-    # clear up "{{"s
-    debugprint and debugprint(f"--- finalizing curly braces ---")
-    ns = ns._finalize_braces_()
-    debugprint and ns._print_(printfunc=debugprint, prefix="  ")
-
-    return ns, unresolved, ns._collect_forgivens_(name)
+class SubstitutionFormatter(string.Formatter):
+    def __init__(self, context: 'SubstitutionContext'):
+        self.context = context
+    
+    def get_value(self, key, args, kwargs):
+        if type(key) is int:
+            return args[key]
+        elif key in kwargs:
+            return kwargs[key]
+        else:
+            return self.context.ns.get(key, KeyError)
 
 
-# def copy_updates(src: SubstitutionNamespace, dest: Dict[str, Any]):
-#     for name, value in src.items():
-#         props = src._child_props_[name]
-#         if props.updated:
-#             dest[name] = value
+@dataclass
+class SubstitutionContext(object):
+    ns: Optional[SubstitutionNS]
+    forgive_errors: Dict[Any, Optional[Union[str, bool]]] = EmptyDictDefault()
+    raise_errors: bool = False
+
+    def __post_init__(self):
+        self.formatter = SubstitutionFormatter(self)
+        # current substitution location. This is appended to with every nested attribute lookup
+        self.nested_location = None
+        # current location stack. A new element is inserted every time a nested substitution starts
+        self.loc_stack = []
+        # 
+        self.enabled = True
+        # list of erros and list of forgiven errors
+        self.errors = []
+        self.forgivens = []
+
+    _current_contexts = {}
+
+    @staticmethod
+    def current() -> 'SubstitutionContext':
+        return SubstitutionContext._current_contexts.get(threading.get_ident())
+
+    def evaluate(self, value: Any, location: List[str] = []):
+        """Formats value using the current substitution context
+
+        Args:
+            value (str): [description]
+        """
+        if not self.enabled:
+            raise SubstitutionError("substitution invoked outside of with clause")
+
+        # not a string, or an Error, or no "{" symbol -- return as is
+        if self.ns is None or not isinstance(value, str) or isinstance(value, Error) or "{" not in value:
+            return value
+
+        # a format() call means a new substitution is being done. 
+        # add a location list to the stac. This list will be appended to as we look up sub-attributes
+        nesting = len(self.loc_stack)
+        self.nested_location = []
+        self.loc_stack.append((self.nested_location, location))
+
+        try:
+            # format string value
+            try:
+                # if we're doing a nested substitution, protect "{{" and "}}" from getting converted to a single brace by pre-replacing them
+                if nesting:
+                    newvalue = multireplace(value, {"{{": "\u00AB", "}}": "\u00BB"})
+                newvalue = self.formatter.format(value)
+                if nesting:
+                    newvalue = multireplace(newvalue, {"\u00AB": "{{", "\u00BB": "}}"})
+            except Exception as exc:
+                # name is the object being formatted
+                name = '.'.join(location)
+                # target is the object that failed to be substituted in
+                target = '.'.join(self.nested_location)
+                # this gives us the current forgiveness policy for failed substitutions
+                forgive = self.forgive_errors.get(type(exc))
+                if type(forgive) is str:
+                    newvalue = forgive.format(name=name, value=value, target=target, exc=exc)
+                elif forgive:
+                    newvalue = f"({exc})"
+                # not forgiving error -- add to list in context, and raise if contexts wants us to raise
+                else:
+                    locstr = f"{name}='{value}'" if name else f"'{value}'"
+                    if type(exc) is AttributeError:
+                        err = SubstitutionError(
+                            f"'{{{target}}} unresolved, in {locstr}"
+                        )
+                    elif type(exc) is CyclicSubstitutionError:
+                        err = SubstitutionError(
+                            f"{{{target}}}: {exc}, in {locstr}"
+                        )
+                    else:
+                        err = SubstitutionError(
+#                            f"{type(exc)} in {{{target}}}: {exc}, in {name}='{value}'"
+                            f"{type(exc).__name__} at {{{target}}}: {exc}, in {locstr}"
+                        )
+                    self.errors.append(err)
+                    if self.raise_errors:
+                        raise
+                    return ''
+                # dropped here, so forgive the error
+                self.forgivens.append(name)
+            return newvalue
+        # when we're done, remove the nested location from the stack
+        finally:
+            self.loc_stack.pop()
+            self.nested_location = self.loc_stack[-1][0] if self.loc_stack else None
+            
+
+@contextmanager
+def substitutions_from(ns: Optional[SubstitutionNS], raise_errors=False, forgive_errors: dict={}):
+    thread = threading.get_ident()
+
+    previous = SubstitutionContext._current_contexts.get(thread)
+    current = SubstitutionContext(ns, forgive_errors=forgive_errors, raise_errors=raise_errors)
+
+    SubstitutionContext._current_contexts[thread] = current
+
+    try:
+        yield current
+    finally:
+        SubstitutionContext._current_contexts[thread] = previous
+        current.enabled = False
+
+
+def forgiving_substitutions_from(ns: SubstitutionNS, forgive="", raise_errors=False):
+    forgive_errors = {err: forgive for err in [AttributeError, KeyError, TypeError, ValueError, SubstitutionError]}
+
+    return substitutions_from(ns, raise_errors=raise_errors, forgive_errors=forgive_errors)
+
+
+
+
