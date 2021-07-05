@@ -155,7 +155,7 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
             elif type(value) in (list, tuple):
                 files = value
             else:
-                raise ParameterValidationError(f"'{name}': invalid type '{type(value)}'")
+                raise ParameterValidationError(f"'{name}={value}': invalid type '{type(value)}'")
 
             if not files:
                 if must_exist:

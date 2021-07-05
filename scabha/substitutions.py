@@ -180,12 +180,7 @@ class SubstitutionFormatter(string.Formatter):
         self.context = context
     
     def get_value(self, key, args, kwargs):
-        if type(key) is int:
-            return args[key]
-        elif key in kwargs:
-            return kwargs[key]
-        else:
-            return self.context.ns.get(key, KeyError)
+        return self.context.get_value(key, args, kwargs)
 
 
 @dataclass
@@ -229,7 +224,7 @@ class SubstitutionContext(object):
         # add a location list to the stac. This list will be appended to as we look up sub-attributes
         nesting = len(self.loc_stack)
         self.nested_location = []
-        self.loc_stack.append((self.nested_location, location))
+        self.loc_stack.append((None, location))
 
         try:
             # format string value
@@ -276,9 +271,28 @@ class SubstitutionContext(object):
             return newvalue
         # when we're done, remove the nested location from the stack
         finally:
+            while self.loc_stack[-1][0] is not None:
+                self.loc_stack.pop()
             self.loc_stack.pop()
             self.nested_location = self.loc_stack[-1][0] if self.loc_stack else None
             
+    def get_value(self, key, args, kwargs):
+        """Implements get_value for string formatter"""
+        if type(key) is int:
+            return args[key]
+        elif key in kwargs:
+            return kwargs[key]
+        else:
+            # this starts an attribute lookup, so remove previous lookup locations
+            # a call to evaluate() will add a location of None, so rewind back to that
+            while self.loc_stack[-1][0] is not None:
+                self.loc_stack.pop()
+            # add a new root location onto the stack
+            self.nested_location = []
+            self.loc_stack.append((self.nested_location, self.loc_stack[-1][1]))
+            # now look up the attribute
+            return self.ns.get(key, KeyError)
+
 
 @contextmanager
 def substitutions_from(ns: Optional[SubstitutionNS], raise_errors=False, forgive_errors: dict={}):
