@@ -129,6 +129,11 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
     validated = {}
     dtypes = {}
     fields = []
+
+    # maps parameter names to/from field names. Fields have "_" not "-"
+    name2field = {}
+    field2name = {}
+
     for name, schema in schemas.items():
         value = inputs.get(name)
         if value is not None:
@@ -136,7 +141,15 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
                 dtypes[name] = dtype_impl = eval(schema.dtype, globals())
             except Exception as exc:
                 raise SchemaError(f"invalid {mkname(name)}.dtype = {schema.dtype}")
-            fields.append((name, dtype_impl))
+
+            # sanitize name: datacalsss won't take hyphens
+            fldname = name.replace("-", "_")
+            while fldname in field2name:
+                fldname += "_"
+            field2name[fldname] = name
+            name2field[name] = fldname
+
+            fields.append((fldname, dtype_impl))
             
             # OmegaConf dicts/lists need to be converted to standard contrainers for pydantic to take them
             if isinstance(value, (ListConfig, DictConfig)):
@@ -230,12 +243,12 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
 
     # validate
     try:   
-        validated = pcls(**{name: value for name, value in inputs.items() if name in schemas and value is not None})
+        validated = pcls(**{name2field[name]: value for name, value in inputs.items() if name in schemas and value is not None})
     except pydantic.ValidationError as exc:
         errors = [f"'{'.'.join(err['loc'])}': {err['msg']}" for err in exc.errors()]
         raise ParameterValidationError(', '.join(errors))
 
-    validated = dataclasses.asdict(validated)
+    validated = {field2name[fld]: value for fld, value in dataclasses.asdict(validated).items()}
 
     # check choice-type parameters
     for name, value in validated.items():
