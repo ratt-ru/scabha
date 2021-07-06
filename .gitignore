@@ -1,0 +1,4 @@
+scabha/__pycache__
+.persistent_history
+scabha.egg-info/
+tests/__pycache__
