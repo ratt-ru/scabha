@@ -1,20 +1,16 @@
 import os.path, re, stat, itertools, logging, yaml, shlex
 from typing import Any, List, Dict, Optional, Union
 from enum import Enum
-from dataclasses import dataclass, field
-from omegaconf import MISSING, OmegaConf, ListConfig, DictConfig
-from collections import OrderedDict
+from dataclasses import dataclass
+from omegaconf import MISSING
 
-def EmptyDictDefault():
-    return field(default_factory=lambda:OrderedDict())
 
-def EmptyListDefault():
-    return field(default_factory=lambda:[])
-
-from .exceptions import CabValidationError, ParameterValidationError, DefinitionError, SchemaError
-from . import validate
-from .validate import validate_parameters
 import scabha
+from scabha import exceptions
+from .exceptions import CabValidationError, ParameterValidationError, DefinitionError, SchemaError
+from .validate import validate_parameters, Unresolved
+from .substitutions import SubstitutionNS
+from .basetypes import EmptyDictDefault, EmptyListDefault
 
 ## almost supported by omegaconf, see https://github.com/omry/omegaconf/issues/144, for now just use Any
 ListOrString = Any   
@@ -119,13 +115,16 @@ class Parameter(object):
 
 @dataclass
 class Cargo(object):
-    name: Optional[str] = None                    # cab name. (If None, use image or command name)
+    name: Optional[str] = None                    # cab name (if None, use image or command name)
+    fqname: Optional[str] = None                  # fully-qualified name (recipe_name.step_label.etc.etc.)
+
     info: Optional[str] = None                    # description
     inputs: Dict[str, Parameter] = EmptyDictDefault()
     outputs: Dict[str, Parameter] = EmptyDictDefault()
     defaults: Dict[str, Any] = EmptyDictDefault()
 
     def __post_init__(self):
+        self.fqname = self.fqname or self.name
         for name in self.inputs.keys():
             if name in self.outputs:
                 raise DefinitionError(f"{name} appears in both inputs and outputs")
@@ -145,7 +144,7 @@ class Cargo(object):
     
     @property
     def invalid_params(self):
-        return [name for name, value in self.params.items() if type(value) is validate.Error]
+        return [name for name, value in self.params.items() if type(value) is exceptions.Error]
 
     @property
     def missing_params(self):
@@ -153,7 +152,7 @@ class Cargo(object):
 
     @property
     def unresolved_params(self):
-        return [name for name, value in self.params.items() if type(value) is validate.Unresolved]
+        return [name for name, value in self.params.items() if type(value) is Unresolved]
 
     @property 
     def finalized(self):
@@ -161,6 +160,8 @@ class Cargo(object):
 
     def finalize(self, config=None, log=None, fqname=None, nesting=0):
         if not self.finalized:
+            if fqname is not None:
+                self.fqname = fqname
             self.config = config
             self.log = log or scabha.logger()
 
@@ -181,7 +182,7 @@ class Cargo(object):
                    raise SchemaError(f"implicit parameter {name} also has a default value")
                 params[name] = schema.implicit
 
-    def validate_inputs(self, params: Dict[str, Any], loosely=False):
+    def validate_inputs(self, params: Dict[str, Any], subst: Optional[SubstitutionNS]=None, loosely=False):
         """Validates inputs.  
         If loosely is True, then doesn't check for required parameters, and doesn't check for files to exist etc.
         """
@@ -190,22 +191,22 @@ class Cargo(object):
         params = params.copy()
         self._add_implicits(params, self.inputs)
         # check inputs
-        params.update(**validate_parameters(params, self.inputs, defaults=self.defaults, 
+        params.update(**validate_parameters(params, self.inputs, defaults=self.defaults, subst=subst, fqname=self.fqname,
                                                 check_unknowns=False, check_required=not loosely, check_exist=not loosely, create_dirs=True))
         # check outputs
-        params.update(**validate_parameters(params, self.outputs, defaults=self.defaults, 
+        params.update(**validate_parameters(params, self.outputs, defaults=self.defaults, subst=subst, fqname=self.fqname, 
                                                 check_unknowns=False, check_required=False, check_exist=False, create_dirs=True, expand_globs=False))
         self.params.update(**params)
         return self.params
 
-    def validate_outputs(self, params: Dict[str, Any], loosely=False):
+    def validate_outputs(self, params: Dict[str, Any], subst: Optional[SubstitutionNS]=None, loosely=False):
         """Validates outputs. Parameter substitution is done. 
         If loosely is True, then doesn't check for required parameters, and doesn't check for files to exist etc.
         """
         assert(self.finalized)
         # add implicit outputs
         self._add_implicits(params, self.outputs)
-        self.params.update(**validate_parameters(params, self.outputs, defaults=self.defaults, 
+        self.params.update(**validate_parameters(params, self.outputs, defaults=self.defaults, subst=subst, fqname=self.fqname,
                                                 check_unknowns=False, check_required=not loosely, check_exist=not loosely))
         return self.params
 
@@ -221,7 +222,9 @@ class Cargo(object):
         ns.update(**{name: "MISSING" for name in self.missing_params})
         return SubstitutionNS(**ns)
 
+
 ParameterPassingMechanism = Enum("scabha.ParameterPassingMechanism", "args yaml")
+
 
 @dataclass 
 class Cab(Cargo):

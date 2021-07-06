@@ -1,13 +1,12 @@
 import re, string
 from collections import OrderedDict
-from scabha.cargo import EmptyDictDefault, EmptyListDefault
 from dataclasses import dataclass
 from contextlib import contextmanager
-from typing import Any, Dict, Optional, Union, FrozenSet, List
+from typing import Any, Dict, Optional, Union, List
 import threading
 
-from .validate import Error
-from .exceptions import SubstitutionError, CyclicSubstitutionError
+from .exceptions import Error, SubstitutionError, CyclicSubstitutionError
+from .basetypes import EmptyDictDefault
 
 # thanks to https://gist.github.com/bgusach/a967e0587d6e01e889fd1d776c5f3729
 def multireplace(string, replacements, ignore_case=False):

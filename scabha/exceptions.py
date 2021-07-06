@@ -7,6 +7,11 @@ def set_logger(log):
     logger = log
 
 
+class Error(str):
+    """A string that's marked as an error"""
+    pass
+
+
 class ScabhaBaseException(Exception):
     def __init__(self, message, log=None):
         Exception.__init__(self, message)
@@ -40,3 +45,8 @@ class CyclicSubstitutionError(SubstitutionError):
         self.location = ".".join(location)
         self.other_location = ".".join(other_location)
         super().__init__(f"'{{{self.location}}}' is a cyclic substition")
+
+class SubstitutionErrorList(ScabhaBaseException):
+    def __init__(self, *errors):
+        self.errors = errors
+        super().__init__(f"{len(errors)} substitution error(s)")
