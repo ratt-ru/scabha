@@ -219,8 +219,8 @@ class SubstitutionContext(object):
         if self.ns is None or not isinstance(value, str) or isinstance(value, Error) or "{" not in value:
             return value
 
-        # a format() call means a new substitution is being done. 
-        # add a location list to the stac. This list will be appended to as we look up sub-attributes
+        # an evaluate() call means a new substitution is being done. 
+        # add a location list to the stack. This list will be appended to as we look up sub-attributes
         nesting = len(self.loc_stack)
         self.nested_location = []
         self.loc_stack.append((None, location))

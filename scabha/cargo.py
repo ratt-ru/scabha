@@ -165,11 +165,13 @@ class Cargo(object):
             self.config = config
             self.log = log or scabha.logger()
 
-    def prevalidate(self, params: Optional[Dict[str, Any]]):
+    def prevalidate(self, params: Optional[Dict[str, Any]], subst: Optional[SubstitutionNS]=None):
         """Does pre-validation. No parameter substitution is done, but will check for missing params and such"""
         self.finalize()
-        self.params = validate_parameters(params, self.inputs_outputs, defaults=self.defaults,
-                                          check_unknowns=True, check_required=False, check_exist=False)
+        self.params = validate_parameters(params, self.inputs_outputs, defaults=self.defaults, subst=subst, fqname=self.fqname,
+                                          check_unknowns=True, check_required=False, check_exist=False,
+                                          create_dirs=False, expand_globs=False, ignore_subst_errors=True)
+
         return self.params
 
     def _add_implicits(self, params: Dict[str, Any], schemas: Dict[str, Parameter]):
@@ -185,6 +187,7 @@ class Cargo(object):
     def validate_inputs(self, params: Dict[str, Any], subst: Optional[SubstitutionNS]=None, loosely=False):
         """Validates inputs.  
         If loosely is True, then doesn't check for required parameters, and doesn't check for files to exist etc.
+        This is used when skipping a step.
         """
         assert(self.finalized)
         # add implicit inputs
@@ -192,10 +195,12 @@ class Cargo(object):
         self._add_implicits(params, self.inputs)
         # check inputs
         params.update(**validate_parameters(params, self.inputs, defaults=self.defaults, subst=subst, fqname=self.fqname,
-                                                check_unknowns=False, check_required=not loosely, check_exist=not loosely, create_dirs=True))
+                                                check_unknowns=False, check_required=not loosely, check_exist=not loosely, 
+                                                create_dirs=not loosely))
         # check outputs
         params.update(**validate_parameters(params, self.outputs, defaults=self.defaults, subst=subst, fqname=self.fqname, 
-                                                check_unknowns=False, check_required=False, check_exist=False, create_dirs=True, expand_globs=False))
+                                                check_unknowns=False, check_required=False, check_exist=False, 
+                                                create_dirs=not loosely, expand_globs=False))
         self.params.update(**params)
         return self.params
 

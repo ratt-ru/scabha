@@ -53,7 +53,8 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
                         check_required=True,
                         check_exist=True,
                         expand_globs=True,
-                        create_dirs=False
+                        create_dirs=False,
+                        ignore_subst_errors=False
                         ) -> Dict[str, Any]:
     """Validates a dict of parameter values against a given schema 
 
@@ -72,6 +73,7 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
         expand_globs (bool): if True, glob patterns in filenames will be expanded.
         create_dirs (bool): if True, non-existing directories in filenames (and parameters with mkdir=True in schema) 
                             will be created.
+        ignore_subst_errors (bool): if True, substitution errors will be ignored
 
 
     Raises:
@@ -97,26 +99,31 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
             if name not in schemas:
                 raise ParameterValidationError(f"unknown parameter '{mkname(name)}'")
         
+    # perform substitution
+    inputs = {}
+    if subst is not None:
+        with substitutions_from(subst, raise_errors=False) as context:
+            for key, value in params.items():
+                inputs[key] = context.evaluate(value, location=[fqname, key] if fqname else [key])
+                # ignore errors if requested
+                if ignore_subst_errors and context.errors:
+                    inputs[key] = Unresolved(context.errors)
+                    context.errors = []
+            if context.errors:
+                raise SubstitutionErrorList(*context.errors)
+
     # split inputs into unresolved substitutions, and proper inputs
-    inputs = {name: value for name, value in params.items() if type(value) is not Unresolved}
-    unresolved = {name: value for name, value in params.items() if type(value) is Unresolved}
-    defaults = defaults or {}
+    unresolved = {name: value for name, value in inputs.items() if type(value) is Unresolved}
+    inputs = {name: value for name, value in inputs.items() if type(value) is not Unresolved}
 
     # add missing defaults 
+    defaults = defaults or {}
     for name, schema in schemas.items():
         if inputs.get(name) is None:
             if name in defaults:
                 inputs[name] = defaults[name]
             elif schema.default is not None:
                 inputs[name] = schema.default
-
-    # perform substitution
-    if subst is not None:
-        with substitutions_from(subst, raise_errors=False) as context:
-            inputs = {key: context.evaluate(value, location=[fqname, key] if fqname else [key]) for key, value in inputs.items()}
-            if context.errors:
-                raise SubstitutionErrorList(context.errors)
-
 
     # check that required args are present
     if check_required:
