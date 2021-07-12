@@ -37,6 +37,8 @@ def test_subst():
         assert context.evaluate("{bar.a}") == "1"
         assert context.evaluate("{bar.b}") == "1-3{}"
         assert context.evaluate("{bar.b1}") == "1-3{}"
+        assert context.evaluate(["{x.a}-{x.c}", "{foo.a}{{}}"]) == ["1-3", "1-3{}"]
+        assert context.evaluate(["{x.a}-{x.c}", {'y': "{foo.a}{{}}"}]) == ["1-3", {'y': "1-3{}"}]
 
     with substitutions_from(ns, raise_errors=False) as context:
         val = context.evaluate("{bar.c}")

@@ -138,7 +138,8 @@ class SubstitutionNS(OrderedDict):
             if name in self:
                 value = super().get(name)
                 if context and not self._nosubst_:
-                    value = context.evaluate(value, location=nestloc)
+                    # recursive=False will invoke substitution on strings, but will return containers as is
+                    value = context.evaluate(value, location=nestloc, recursive=False)
                 return value
             elif default in (KeyError, AttributeError):
                 raise default(name)
@@ -206,74 +207,105 @@ class SubstitutionContext(object):
     def current() -> 'SubstitutionContext':
         return SubstitutionContext._current_contexts.get(threading.get_ident())
 
-    def evaluate(self, value: Any, location: List[str] = []):
+    def evaluate(self, value: Any, location: List[str] = [], recursive=True):
         """Formats value using the current substitution context
 
         Args:
-            value (str): [description]
+            value (str): string to be formatted, or a container to be recursed into
+            location:    list describing nested location of value, e.g. ['foo', 'bar', '1']
+            recursive:   recurse into lists and dicts
         """
         if not self.enabled:
             raise SubstitutionError("substitution invoked outside of with clause")
 
-        # not a string, or an Error, or no "{" symbol -- return as is
-        if self.ns is None or not isinstance(value, str) or isinstance(value, Error) or "{" not in value:
+        if not recursive and isinstance(value, (list, tuple, dict, OrderedDict)):
             return value
 
-        # an evaluate() call means a new substitution is being done. 
-        # add a location list to the stack. This list will be appended to as we look up sub-attributes
-        nesting = len(self.loc_stack)
-        self.nested_location = []
-        self.loc_stack.append((None, location))
+        # not a string, or an Error, or no "{" symbol -- return as is
+        if self.ns is not None and isinstance(value, (str, list, tuple, dict, OrderedDict)):
 
-        try:
-            # format string value
+            # an evaluate() call means a new substitution is being done. 
+            # add a location list to the stack. This list will be appended to as we look up sub-attributes
+            nesting = len(self.loc_stack)
+            self.nested_location = []
+            self.loc_stack.append((None, location))
+
             try:
-                # if we're doing a nested substitution, protect "{{" and "}}" from getting converted to a single brace by pre-replacing them
-                if nesting:
-                    newvalue = multireplace(value, {"{{": "\u00AB", "}}": "\u00BB"})
-                newvalue = self.formatter.format(value)
-                if nesting:
-                    newvalue = multireplace(newvalue, {"\u00AB": "{{", "\u00BB": "}}"})
-            except Exception as exc:
-                # name is the object being formatted
-                name = '.'.join(location)
-                # target is the object that failed to be substituted in
-                target = '.'.join(self.nested_location)
-                # this gives us the current forgiveness policy for failed substitutions
-                forgive = self.forgive_errors.get(type(exc))
-                if type(forgive) is str:
-                    newvalue = forgive.format(name=name, value=value, target=target, exc=exc)
-                elif forgive:
-                    newvalue = f"({exc})"
-                # not forgiving error -- add to list in context, and raise if contexts wants us to raise
-                else:
-                    locstr = f"{name}='{value}'" if name else f"'{value}'"
-                    if type(exc) is AttributeError:
-                        err = SubstitutionError(
-                            f"'{{{target}}} unresolved, in {locstr}"
-                        )
-                    elif type(exc) is CyclicSubstitutionError:
-                        err = SubstitutionError(
-                            f"{{{target}}}: {exc}, in {locstr}"
-                        )
-                    else:
-                        err = SubstitutionError(
-#                            f"{type(exc)} in {{{target}}}: {exc}, in {name}='{value}'"
-                            f"{type(exc).__name__} at {{{target}}}: {exc}, in {locstr}"
-                        )
-                    self.errors.append(err)
-                    if self.raise_errors:
-                        raise
-                    return ''
-                # dropped here, so forgive the error
-                self.forgivens.append(name)
-            return newvalue
-        # when we're done, remove the nested location from the stack
-        finally:
-            while self.loc_stack[-1][0] is not None:
+                value = self._evaluate_element(value, location, nesting)
+            finally:
+                while self.loc_stack[-1][0] is not None:
+                    self.loc_stack.pop()
                 self.loc_stack.pop()
-            self.loc_stack.pop()
-            self.nested_location = self.loc_stack[-1][0] if self.loc_stack else None
+                self.nested_location = self.loc_stack[-1][0] if self.loc_stack else None
+
+        return value
+
+    def _evaluate_element(self, value: Any, location: List[str], nesting:int):
+        newvalue = value
+        if isinstance(value, str):
+            if isinstance(value, Error) or "{" not in value:
+                return value
+            newvalue = self._evaluate_str(value, location, nesting)
+        elif isinstance(value, (list, tuple)):
+            for i, element in enumerate(value):
+                newelement = self._evaluate_element(element, location + [str(i)], nesting)
+                if newelement is not element:
+                    if newvalue is value:
+                        newvalue = list(value)
+                    newvalue[i] = newelement
+        elif isinstance(value, (dict, OrderedDict)):
+            for key, element in value.items():
+                newelement = self._evaluate_element(element, location + [key], nesting)
+                if newelement is not element:
+                    if newvalue is value:
+                        newvalue = OrderedDict(value)
+                    newvalue[key] = newelement
+        return newvalue
+
+
+    def _evaluate_str(self, value: str, location: List[str], nesting:int):
+        try:
+            # if we're doing a nested substitution, protect "{{" and "}}" from getting converted to a single brace by pre-replacing them
+            if nesting:
+                newvalue = multireplace(value, {"{{": "\u00AB", "}}": "\u00BB"})
+            newvalue = self.formatter.format(value)
+            if nesting:
+                newvalue = multireplace(newvalue, {"\u00AB": "{{", "\u00BB": "}}"})
+        except Exception as exc:
+            # name is the object being formatted
+            name = '.'.join(location)
+            # target is the object that failed to be substituted in
+            target = '.'.join(self.nested_location)
+            # this gives us the current forgiveness policy for failed substitutions
+            forgive = self.forgive_errors.get(type(exc))
+            if type(forgive) is str:
+                newvalue = forgive.format(name=name, value=value, target=target, exc=exc)
+            elif forgive:
+                newvalue = f"({exc})"
+            # not forgiving error -- add to list in context, and raise if contexts wants us to raise
+            else:
+                locstr = f"{name}='{value}'" if name else f"'{value}'"
+                if type(exc) is AttributeError:
+                    err = SubstitutionError(
+                        f"'{{{target}}} unresolved, in {locstr}"
+                    )
+                elif type(exc) is CyclicSubstitutionError:
+                    err = SubstitutionError(
+                        f"{{{target}}}: {exc}, in {locstr}"
+                    )
+                else:
+                    err = SubstitutionError(
+#                            f"{type(exc)} in {{{target}}}: {exc}, in {name}='{value}'"
+                        f"{type(exc).__name__} at {{{target}}}: {exc}, in {locstr}"
+                    )
+                self.errors.append(err)
+                if self.raise_errors:
+                    raise
+                return ''
+            # dropped here, so forgive the error
+            self.forgivens.append(name)
+        return newvalue
+
             
     def get_value(self, key, args, kwargs):
         """Implements get_value for string formatter"""
