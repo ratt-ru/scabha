@@ -46,16 +46,17 @@ class ParameterPolicies(object):
     # Value formatting policies.
     # If set, specifies {}-type format strings used to convert the value(s) to string(s).
     # For a non-list value:
-    #   * if 'format_list' is set, formatts the value into a list of strings as fmt[i].format(value, **dict)
+    #   * if 'format_list_scalar' is set, formats the value into a list of strings as fmt[i].format(value, **dict)
     #     example:  ["{0}", "{0}"] will simply repeat the value twice
     #   * if 'format' is set, value is formatted as format.format(value, **dict) 
     # For a list-type value:
     #   * if 'format_list' is set, each element #i formatted separately as fmt[i].format(*value, **dict)
-    #     example:  ["{0}", "{1}"] will simply 
+    #     example:  ["{0}", "{2}"] will output elements 0 and 2, and skip element 1 
     #   * if 'format' is set, each element #i is formatted as format.format(value[i], **dict) 
     # **dict contains all parameters passed to a cab, so these can be used in the formatting
     format: Optional[str] = None
     format_list: Optional[List[str]] = None
+    format_list_scalar: Optional[List[str]] = None
 
 
 
@@ -387,6 +388,7 @@ class Cab(Cargo):
             is_list = hasattr(value, '__iter__') and type(value) is not str
             format_policy = get_policy(schema, 'format')
             format_list_policy = get_policy(schema, 'format_list')
+            format_scalar_policy = get_policy(schema, 'format_list_scalar')
             split_policy = get_policy(schema, 'split')
             
             if type(value) is str and split_policy:
@@ -394,7 +396,7 @@ class Cab(Cargo):
                 is_list = True
 
             if is_list:
-                # apply formatting policies
+                # apply formatting policies to a list of values
                 if format_list_policy:
                     if len(format_list_policy) != len(value):
                         raise CabValidationError("length of format_list_policy does not match length of '{name}'", log=self.log)
@@ -404,8 +406,9 @@ class Cab(Cargo):
                 else:
                     value = [str(x) for x in value]
             else:
-                if format_list_policy:
-                    value = [fmt.format(value, **value_dict) for fmt in format_list_policy]
+                # apply formatting policies to a scalar valye
+                if format_scalar_policy:
+                    value = [fmt.format(value, **value_dict) for fmt in format_scalar_policy]
                     is_list = True
                 elif format_policy:
                     value = format_policy.format(value, **value_dict)
