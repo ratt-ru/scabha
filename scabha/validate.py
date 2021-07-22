@@ -100,8 +100,8 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
                 raise ParameterValidationError(f"unknown parameter '{mkname(name)}'")
         
     # perform substitution
-    inputs = {}
     if subst is not None:
+        inputs = {}
         with substitutions_from(subst, raise_errors=False) as context:
             for key, value in params.items():
                 inputs[key] = context.evaluate(value, location=[fqname, key] if fqname else [key])
@@ -111,6 +111,8 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
                     context.errors = []
             if context.errors:
                 raise SubstitutionErrorList(*context.errors)
+    else:
+        inputs = params
 
     # split inputs into unresolved substitutions, and proper inputs
     unresolved = {name: value for name, value in inputs.items() if type(value) is Unresolved}
@@ -206,7 +208,7 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
                 if must_exist:
                     raise ParameterValidationError(f"'{mkname(name)}={value}' does not specify any file(s)")
                 else:
-                    inputs[name] = [] if is_file_list else ""
+                    inputs[name] = [value] if is_file_list else value
                     continue
 
             # check for existence
