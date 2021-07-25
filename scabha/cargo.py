@@ -37,6 +37,11 @@ class ParameterPolicies(object):
     # if True, implicit parameters will be skipped automatically
     skip_implicits: bool = True
 
+    # how to pass boolean True values. None = pass option name alone, else pass option name + given value
+    explicit_true: Optional[str] = None
+    # how to pass boolean False values. None = skip option, else pass option name + given value
+    explicit_false: Optional[str] = None
+
     # if set, a string-type value will be split into a list of arguments using this separator
     split: Optional[str] = None
 
@@ -124,6 +129,8 @@ class Cargo(object):
     outputs: Dict[str, Parameter] = EmptyDictDefault()
     defaults: Dict[str, Any] = EmptyDictDefault()
     backend: Optional[str] = None
+
+    backend: Optional[str] = None                 # backend, if not default
 
     def __post_init__(self):
         self.fqname = self.fqname or self.name
@@ -383,7 +390,7 @@ class Cab(Cargo):
         def stringify_argument(name, value, schema, option=None):
             if value is None:
                 return None
-            if schema.dtype == "bool" and not value and not schema.required:
+            if schema.dtype == "bool" and not value and get_policy(schema, 'explicit_false') is None:
                 return None
 
             is_list = hasattr(value, '__iter__') and type(value) is not str
@@ -473,9 +480,9 @@ class Cab(Cargo):
 
             option = (get_policy(schema, 'prefix') or "--") + (schema.nom_de_guerre or name)
 
-            # True values map to a single option
-            if schema.dtype == "bool" and value:
-                args.append(option)
+            if schema.dtype == "bool":
+                explicit = get_policy(schema, 'explicit_true' if value else 'explicit_false')
+                args += [option, str(explicit)] if explicit is not None else ([option] if value else [])
             else:
                 value = stringify_argument(name, value, schema, option=option)
                 if type(value) is list:

@@ -98,12 +98,22 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
         for name in params:
             if name not in schemas:
                 raise ParameterValidationError(f"unknown parameter '{mkname(name)}'")
-        
+    
+    inputs = params.copy()
+
+    # add missing defaults 
+    defaults = defaults or {}
+    for name, schema in schemas.items():
+        if name not in params:
+            if name in defaults:
+                inputs[name] = defaults[name]
+            elif schema.default is not None:
+                inputs[name] = schema.default
+
     # perform substitution
-    inputs = {}
     if subst is not None:
         with substitutions_from(subst, raise_errors=False) as context:
-            for key, value in params.items():
+            for key, value in inputs.items():
                 inputs[key] = context.evaluate(value, location=[fqname, key] if fqname else [key])
                 # ignore errors if requested
                 if ignore_subst_errors and context.errors:
@@ -115,15 +125,6 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
     # split inputs into unresolved substitutions, and proper inputs
     unresolved = {name: value for name, value in inputs.items() if type(value) is Unresolved}
     inputs = {name: value for name, value in inputs.items() if type(value) is not Unresolved}
-
-    # add missing defaults 
-    defaults = defaults or {}
-    for name, schema in schemas.items():
-        if inputs.get(name) is None:
-            if name in defaults:
-                inputs[name] = defaults[name]
-            elif schema.default is not None:
-                inputs[name] = schema.default
 
     # check that required args are present
     if check_required:
@@ -206,7 +207,7 @@ def validate_parameters(params: Dict[str, Any], schemas: Dict[str, Any],
                 if must_exist:
                     raise ParameterValidationError(f"'{mkname(name)}={value}' does not specify any file(s)")
                 else:
-                    inputs[name] = [] if is_file_list else ""
+                    inputs[name] = [value] if is_file_list else value
                     continue
 
             # check for existence
