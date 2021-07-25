@@ -123,6 +123,7 @@ class Cargo(object):
     inputs: Dict[str, Parameter] = EmptyDictDefault()
     outputs: Dict[str, Parameter] = EmptyDictDefault()
     defaults: Dict[str, Any] = EmptyDictDefault()
+    backend: Optional[str] = None
 
     def __post_init__(self):
         self.fqname = self.fqname or self.name
