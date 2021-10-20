@@ -36,7 +36,7 @@ with open(CONFIG, "r") as _std:
     config = ConfigNamespace(yaml.safe_load(_std))
     parameters_dict = OrderedDict([(p["name"], p["value"]) for p in getattr(config, 'parameters', [])])
     parameters_prefix = OrderedDict([(p["name"], p.get("prefix", config.prefix)) for p in getattr(config, 'parameters', [])])
-    positoinals = OrderedDict([(p["name"], p.get("positional", False)) for p in getattr(config, 'parameters', [])])
+    positionals = OrderedDict([(p["name"], p.get("positional", False)) for p in getattr(config, 'parameters', [])])
     parameters_positional = list( filter(lambda p: p["name"], positionals) )
     parameters = ConfigNamespace(parameters_dict)
 
