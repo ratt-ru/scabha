@@ -148,7 +148,7 @@ def parse_parameters(pardict=None, positional=[], mandatory=None, repeat=True, r
         posarg = config["parameters"][key].get("positional", False)
         if posarg and key not in positional:
             if hasattr(value, '__iter__') and type(value) is not str:
-                pos_args = listargs(pos_args, repeat_argument(key, value)
+                pos_args = listargs(pos_args, repeat_argument(key, value))
             else:
                 pos_args.append(str(value))
 
