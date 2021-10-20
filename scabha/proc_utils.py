@@ -145,7 +145,7 @@ def parse_parameters(pardict=None, positional=[], mandatory=None, repeat=True, r
         # ignore None or False values, they are considered unset
         if value in [None, False]:
             continue
-        posarg = config["parameters"][key].get("positional", False)
+        posarg = config.parameters[key].get("positional", False)
         if posarg and key not in positional:
             if hasattr(value, '__iter__') and type(value) is not str:
                 pos_args = listargs(pos_args, repeat_argument(key, value))
