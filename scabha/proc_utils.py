@@ -5,7 +5,7 @@ import glob
 import os.path
 import shutil
 
-from . import log, OUTPUT, MSDIR, config, parameters_dict, parameters_prefix
+from . import log, OUTPUT, MSDIR, config, parameters_dict, parameters_prefix, parameters_positional
 
 def convert_command(command):
     """Converts list or str command into a string and a list"""
@@ -76,15 +76,7 @@ def clear_junk():
                     elif os.path.isdir(f):
                         shutil.rmtree(f)
 
-def listargs(appendto, appendwith):
-    if type(appendwith) is list:
-        appendto += appendwith
-    else:
-        appendto.append(appendwith)
-    return appendto
-
-
-def parse_parameters(pardict=None, positional=[], mandatory=None, repeat=True, repeat_dict=None):
+def parse_parameters(pardict=None, positional=None, mandatory=None, repeat=True, repeat_dict=None):
     """
     Converts dict of parameters into a list of command-line arguments
 
@@ -100,6 +92,7 @@ def parse_parameters(pardict=None, positional=[], mandatory=None, repeat=True, r
     Returns list of arguments.
     """
     pardict = pardict or parameters_dict
+    positional = positional or parameters_positional
     if repeat_dict is None:
         repeat_dict = {}
     pos_args = []
@@ -134,7 +127,11 @@ def parse_parameters(pardict=None, positional=[], mandatory=None, repeat=True, r
                 if value in [None, False]:
                     continue
                 elif hasattr(value, '__iter__') and type(value) is not str:
-                    pos_args = listargs(pos_args, repeat_argument(key, value))
+                    value = repeat_argument(key, value)
+                    if type(value) is list:
+                        pos_args += value
+                    else:
+                        pos_args.append(value)
                 else:
                     pos_args.append(str(value))
             else:
@@ -145,13 +142,6 @@ def parse_parameters(pardict=None, positional=[], mandatory=None, repeat=True, r
         # ignore None or False values, they are considered unset
         if value in [None, False]:
             continue
-        posarg = config.parameters[key].get("positional", False)
-        if posarg and key not in positional:
-            if hasattr(value, '__iter__') and type(value) is not str:
-                pos_args = listargs(pos_args, repeat_argument(key, value))
-            else:
-                pos_args.append(str(value))
-
         prefix = parameters_prefix[key]
         option = f'{prefix}{key}'
         # True values map to a single option
