@@ -34,8 +34,17 @@ class ConfigNamespace(object):
 # load config into a config namespace, and config["parameters"] into a parameters namespace
 with open(CONFIG, "r") as _std:
     config = ConfigNamespace(yaml.safe_load(_std))
-    parameters_dict = OrderedDict([(p["name"], p["value"]) for p in getattr(config, 'parameters', [])])
-    parameters_prefix = OrderedDict([(p["name"], p.get("prefix", config.prefix)) for p in getattr(config, 'parameters', [])])
+
+    parameters_dict = OrderedDict()
+    parameters_prefix = OrderedDict()
+    parameters_positional = []
+    for param in getattr(config, 'parameters', []):
+        __name = param["name"]
+        parameters_dict[__name] = param["value"]
+        parameters_prefix[__name] = param.get("prefix", config.prefix)
+        __posarg = param.get("positional", False)
+        if __posarg:
+            parameters_positional.append(__name)
     parameters = ConfigNamespace(parameters_dict)
 
 def init_logger(name="STIMELA",

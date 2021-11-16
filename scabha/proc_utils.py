@@ -5,7 +5,7 @@ import glob
 import os.path
 import shutil
 
-from . import log, OUTPUT, MSDIR, config, parameters_dict, parameters_prefix
+from . import log, OUTPUT, MSDIR, config, parameters_dict, parameters_prefix, parameters_positional
 
 def convert_command(command):
     """Converts list or str command into a string and a list"""
@@ -92,6 +92,7 @@ def parse_parameters(pardict=None, positional=None, mandatory=None, repeat=True,
     Returns list of arguments.
     """
     pardict = pardict or parameters_dict
+    positional = positional or parameters_positional
     if repeat_dict is None:
         repeat_dict = {}
     pos_args = []
